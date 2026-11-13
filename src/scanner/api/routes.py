@@ -72,6 +72,8 @@ def _validate_git(body: GitScanRequest) -> None:
             validate_ref(body.base)
     except UnsafeInputError as exc:
         raise HTTPException(400, str(exc)) from exc
+    if body.history and body.base is not None:
+        raise HTTPException(400, "history cannot be combined with base")
 
 
 def _enqueue(
@@ -142,7 +144,9 @@ async def create_scan(request: Request, owner: OwnerDep) -> ScanCreated:
         except ValueError as exc:
             raise HTTPException(422, "body must be JSON with git_url and optional ref") from exc
         await run_in_threadpool(_validate_git, body)
-        new = repo.NewScan("git", body.git_url, body.ref, body.base, body.baseline_id)
+        new = repo.NewScan(
+            "git", body.git_url, body.ref, body.base, body.baseline_id, history=body.history
+        )
     else:
         raise HTTPException(415, "send a multipart zip upload or a JSON git request")
     try:

@@ -17,7 +17,7 @@ from scanner.plugins.semgrep import SemgrepPlugin
 from scanner.plugins.trivy import TrivyPlugin
 from scanner.plugins.trufflehog import TrufflehogPlugin
 from scanner.settings import Settings
-from scanner.worker.sandbox import SandboxError, docker_command
+from scanner.worker.sandbox import SandboxDirs, SandboxError, docker_command
 
 runner = CliRunner()
 
@@ -128,7 +128,7 @@ def command(settings: Settings, tmp_path: Path) -> list[str]:
     src, out = tmp_path / "src", tmp_path / "out"
     src.mkdir(exist_ok=True)
     out.mkdir(exist_ok=True)
-    return docker_command(settings, "a" * 32, src, out)
+    return docker_command(settings, "a" * 32, SandboxDirs(src, out))
 
 
 def test_offline_containers_have_no_network_and_a_read_only_mirror(tmp_path: Path) -> None:

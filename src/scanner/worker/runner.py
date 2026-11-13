@@ -2,6 +2,7 @@ import logging
 import shutil
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from scanner.db import repo
 from scanner.db.models import Scan
 from scanner.db.session import session_scope
 from scanner.ingest.errors import UnsafeInputError
-from scanner.ingest.git_checkout import git_checkout
+from scanner.ingest.git_checkout import FetchOptions, git_checkout
 from scanner.ingest.safe_extract import effective_root, safe_extract
 from scanner.report import html as html_report
 from scanner.report import json as json_report
@@ -26,6 +27,7 @@ from scanner.retention import prune
 from scanner.settings import Settings
 from scanner.worker.sandbox import (
     ProgressWatch,
+    SandboxDirs,
     SandboxError,
     prepare_out_dir,
     run_in_sandbox,
@@ -51,30 +53,30 @@ def _progress_saver(factory: sessionmaker[Session], scan_id: str) -> Callable[[S
     return save
 
 
+def _fetch_git(settings: Settings, scan: Scan, workdir: Path) -> None:
+    """Fetch the scanned revision into src, the base into base, and the history if asked."""
+    options = FetchOptions(
+        timeout=min(settings.scan_timeout_seconds, 600), limits=settings.extract_limits
+    )
+    head = options
+    if scan.history:
+        depth = settings.history_max_commits
+        head = replace(options, depth=depth, history_dest=workdir / "history")
+    git_checkout(scan.source_ref or "", scan.git_ref or "HEAD", workdir / "src", head)
+    if scan.base_ref:
+        git_checkout(scan.source_ref or "", scan.base_ref, workdir / "base", options)
+
+
 def _scan_source(
     settings: Settings, factory: sessionmaker[Session], scan: Scan, workdir: Path
 ) -> ScanReport:
     src, out, base = workdir / "src", workdir / "out", workdir / "base"
+    history = workdir / "history"  # only used by history scans
     workdir.mkdir(parents=True, exist_ok=True)
     if scan.source_type == "zip":
         safe_extract(settings.uploads_dir / f"{scan.id}.zip", src, settings.extract_limits)
     else:
-        fetch_timeout = min(settings.scan_timeout_seconds, 600)
-        git_checkout(
-            scan.source_ref or "",
-            scan.git_ref or "HEAD",
-            src,
-            timeout=fetch_timeout,
-            limits=settings.extract_limits,
-        )
-        if scan.base_ref:
-            git_checkout(
-                scan.source_ref or "",
-                scan.base_ref,
-                base,
-                timeout=fetch_timeout,
-                limits=settings.extract_limits,
-            )
+        _fetch_git(settings, scan, workdir)
     prepare_out_dir(out)
     # Zips often wrap everything in one folder; git trees must be compared as they are.
     root = effective_root(src) if scan.source_type == "zip" else src
@@ -84,7 +86,8 @@ def _scan_source(
     save_progress = _progress_saver(factory, scan.id)
     save_progress(waiting(tools, passes=2 if base_root else 1))
     watch = ProgressWatch(tools, save_progress)
-    result = run_in_sandbox(settings, scan.id, root, out, base_root, watch)
+    dirs = SandboxDirs(root, out, base_root, history if scan.history else None)
+    result = run_in_sandbox(settings, scan.id, dirs, watch)
     if result.timed_out:
         raise SandboxError("the scan exceeded the time limit")
     if result.exit_code not in COMPLETED_EXIT_CODES:

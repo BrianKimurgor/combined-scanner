@@ -56,6 +56,7 @@ class Scan(Base):
     summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # tools, counts, gate
     baseline_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # baselines.id
     progress_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # per-scanner state
+    history: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # every commit too
 
 
 class UiSession(Base):

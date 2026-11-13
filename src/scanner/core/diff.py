@@ -68,10 +68,10 @@ def _stable_key(
         )
     if category is Category.LICENSE:
         return ("license", finding.package or "", finding.rule_id)
-    if (
-        category in PROTECTED
-    ):  # never read the offending line; position among same-rule hits is enough
-        return (category.value, finding.rule_id, finding.file or "")
+    if category in PROTECTED:
+        # Never read the offending line; position among same-rule hits is enough.
+        key = (category.value, finding.rule_id, finding.file or "")
+        return (*key, finding.commit) if finding.commit else key
     if category is Category.COMPLEXITY:
         return ("complexity", finding.file or "", finding.title)
     text = ""

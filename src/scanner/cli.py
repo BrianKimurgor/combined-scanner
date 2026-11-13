@@ -1,3 +1,4 @@
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -262,6 +263,12 @@ def scan(
             "--semgrep-rules", help="Semgrep rules to use instead of the configured ones."
         ),
     ] = None,
+    history: Annotated[
+        bool,
+        typer.Option(
+            help="Read secrets from every commit of the git repository, not only the current files."
+        ),
+    ] = False,
     progress_file: Annotated[
         Path | None,
         typer.Option(
@@ -285,35 +292,54 @@ def scan(
 
     With --base REF (a git repository) or --base-path DIR, scan both revisions and report
     only the findings the change introduced. With --baseline FILE (see `scanner baseline`),
-    findings already recorded there are treated as accepted. Exit codes: 0 pass, 1 quality
-    gate failed, 2 scanner or configuration error.
+    findings already recorded there are treated as accepted. With --history, the secret
+    scanners read every commit of the git repository instead of the current files. Exit codes:
+    0 pass, 1 quality gate failed, 2 scanner or configuration error.
     """
-    # Each Typer option is a parameter, so a command with many options has many parameters;
-    # the logic itself lives in the helpers above.
+    # Every Typer option is a parameter; the logic itself lives in the helpers below.
     # lizard forgives(parameter_count)
-    if base is not None and base_path is not None:
-        typer.echo("Use either --base or --base-path, not both.", err=True)
-        raise typer.Exit(CONFIG_ERROR)
+    target = Target(path, base, head, base_path)
+    _check_options(target, history)
     try:
         cfg = _scan_config(config, fail_on, offline, semgrep_rules)
+        cfg.history = _history_repo(path) if history else None
         baseline = load_baseline(baseline_file) if baseline_file else None
         plugins = build_plugins(cfg.scanners.enabled)
-    except (OSError, ValueError, yaml.YAMLError, ValidationError) as exc:
+    except (OSError, ValueError, yaml.YAMLError, ValidationError, UnsafeSourceError) as exc:
         typer.echo(f"Configuration error: {exc}", err=True)
         raise typer.Exit(CONFIG_ERROR) from exc
-
-    target = Target(path, base, head, base_path)
-    scanned = _staged(target, stage_dir) if stage_dir is not None else target
     options = ScanOptions(baseline, _progress(plugins, target, progress_file))
+    report = _scan_target(target, stage_dir, cfg, plugins, options)
+    _emit(_RENDERERS[fmt](report), output)
+    raise typer.Exit(exit_code(report))
+
+
+def _check_options(target: Target, history: bool) -> None:
+    if target.base is not None and target.base_path is not None:
+        typer.echo("Use either --base or --base-path, not both.", err=True)
+        raise typer.Exit(CONFIG_ERROR)
+    if history and target.is_diff:
+        typer.echo("--history cannot be combined with --base or --base-path.", err=True)
+        raise typer.Exit(CONFIG_ERROR)
+
+
+def _history_repo(path: Path) -> str:
+    """The worker mounts the fetched history separately; otherwise it is PATH's repository."""
+    return os.environ.get("SCANNER_HISTORY_REPO") or str(git_toplevel(path))
+
+
+def _scan_target(
+    target: Target, stage_dir: Path | None, cfg: Config, plugins: list[ScannerPlugin],
+    options: ScanOptions,
+) -> ScanReport:  # fmt: skip
+    scanned = _staged(target, stage_dir) if stage_dir is not None else target
     try:
         report = _run(scanned, cfg, plugins, options)
     except UnsafeSourceError as exc:
         typer.echo(f"Cannot compare revisions: {exc}", err=True)
         raise typer.Exit(CONFIG_ERROR) from exc
-    if scanned.path != path:  # keep the staging directory out of the report
-        report = _relabel(report, target)
-    _emit(_RENDERERS[fmt](report), output)
-    raise typer.Exit(exit_code(report))
+    # Name the folders the user gave, not the staging copies that were scanned.
+    return _relabel(report, target) if scanned.path != target.path else report
 
 
 def _staged(target: Target, stage_dir: Path) -> Target:

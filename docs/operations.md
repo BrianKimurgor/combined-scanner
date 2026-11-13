@@ -23,6 +23,7 @@ All settings are environment variables.
 | `SCANNER_MAX_SCANS_PER_HOUR` | 30 | Per API key |
 | `SCANNER_MAX_QUEUED_SCANS` | 200 | Server-wide queue cap |
 | `SCANNER_SCAN_TIMEOUT_SECONDS` | 1800 | Per scan |
+| `SCANNER_HISTORY_MAX_COMMITS` | 1000 | Commits fetched for a history scan, counting back from the scanned revision |
 | `SCANNER_SANDBOX` | `docker` | `local` runs scans with no sandbox: development only |
 | `SCANNER_SANDBOX_IMAGE` | `code-scanner-worker` | Image built from `docker/Dockerfile.worker` |
 | `SCANNER_SANDBOX_NETWORK` | `bridge` | Container network (ignored when offline) |

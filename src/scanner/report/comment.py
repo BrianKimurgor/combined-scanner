@@ -11,7 +11,9 @@ MAX_CHARS = 60_000  # GitHub rejects comments over 65,536 characters
 def _location(finding: Finding) -> str:
     if not finding.file:
         return "-"
-    return code_span(f"{finding.file}:{finding.line_start}" if finding.line_start else finding.file)
+    place = f"{finding.file}:{finding.line_start}" if finding.line_start else finding.file
+    where = code_span(place)
+    return f"{where} in commit {code_span(finding.commit[:8])}" if finding.commit else where
 
 
 def render(report: ScanReport) -> str:

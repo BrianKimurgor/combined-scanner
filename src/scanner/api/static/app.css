@@ -248,6 +248,7 @@ input::placeholder { color: var(--muted); opacity: 0.8; }
 label { display: block; margin: 14px 0 6px; font-weight: 600; font-size: 13px; }
 label.inline { display: inline-flex; gap: 8px; align-items: center; margin: 0; font-weight: 500; color: var(--muted); }
 label.inline select { color: var(--text); }
+label.check { margin-top: 14px; color: var(--text); cursor: pointer; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 4px 0; }
 .row.end { justify-content: flex-end; }
 .form-actions { margin-top: 20px; }

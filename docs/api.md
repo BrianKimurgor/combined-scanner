@@ -25,7 +25,10 @@ scanner-ui` and come from the same origin.
 ```
 
 `base` makes it a diff scan (only findings new in `ref` count). `baseline_id` (also a form field for
-uploads) accepts the findings recorded in that baseline. Statuses: `queued`, `running`, `done`, `failed`.
+uploads) accepts the findings recorded in that baseline. `"history": true` also reads every commit of
+`ref` (up to `SCANNER_HISTORY_MAX_COMMITS`) for secrets; it cannot be combined with `base`, and the
+scan status reports it as `history`. Findings from the history carry a `commit` field. Statuses:
+`queued`, `running`, `done`, `failed`.
 
 ## Suppressions and baselines
 

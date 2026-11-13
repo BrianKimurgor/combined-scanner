@@ -46,6 +46,8 @@ def _result(finding: Finding, rule_index: int) -> dict[str, Any]:
     }
     if finding.is_new is not None:
         result["properties"]["isNew"] = finding.is_new
+    if finding.commit:  # history scans: the location is in this commit, not the current tree
+        result["properties"]["commit"] = finding.commit
     if finding.file:
         physical: dict[str, Any] = {
             "artifactLocation": {"uri": quote(finding.file), "uriBaseId": "%SRCROOT%"}

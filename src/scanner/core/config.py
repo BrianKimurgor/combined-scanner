@@ -106,6 +106,9 @@ class Config(BaseModel):
     license_ignore: list[str] = Field(default_factory=lambda: ["@img/sharp-*"])
     # Set by the operator (CLI flag), not meant for scanned projects: no network, local databases.
     offline: bool = False
+    # Set by the operator (CLI --history): the secret scanners read every commit of this git
+    # repository instead of the current files.
+    history: str | None = None
 
 
 def load_config(path: Path | None) -> Config:

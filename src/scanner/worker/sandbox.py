@@ -32,18 +32,23 @@ class SandboxResult:
     stderr: str
 
 
-def docker_command(
-    settings: Settings,
-    scan_id: str,
-    source_dir: Path,
-    out_dir: Path,
-    base_dir: Path | None = None,
-) -> list[str]:
+@dataclass(frozen=True)
+class SandboxDirs:
+    """The folders one scan reads and writes."""
+
+    source: Path
+    out: Path
+    base: Path | None = None  # diff scans: the base revision
+    history: Path | None = None  # history scans: the fetched commits, as a bare repository
+
+
+def docker_command(settings: Settings, scan_id: str, dirs: SandboxDirs) -> list[str]:
     """One throwaway, locked-down container per scan; the source is mounted read-only."""
-    source, out = str(source_dir.resolve()), str(out_dir.resolve())
-    base = str(base_dir.resolve()) if base_dir else None
+    source, out = str(dirs.source.resolve()), str(dirs.out.resolve())
+    base = str(dirs.base.resolve()) if dirs.base else None
+    history = str(dirs.history.resolve()) if dirs.history else None
     mirror = str(settings.mirror_dir.resolve()) if settings.offline else None
-    if any("," in path for path in (source, out, base or "", mirror or "")):
+    if any("," in path for path in (source, out, base or "", history or "", mirror or "")):
         raise SandboxError("scan paths must not contain commas")
     if mirror and not settings.mirror_dir.is_dir():
         raise SandboxError("offline mode needs a database mirror (scanner admin mirror-update)")
@@ -57,9 +62,12 @@ def docker_command(
     ]  # fmt: skip
     if base:
         command += ["--mount", f"type=bind,source={base},target=/base,readonly"]
+    if history:
+        command += ["--mount", f"type=bind,source={history},target=/history,readonly"]
+        command += ["-e", "SCANNER_HISTORY_REPO=/history"]
     return command + [
         settings.sandbox_image,
-        *_scan_arguments(base is not None, mirror is not None),
+        *_scan_arguments(base is not None, mirror is not None, history is not None),
     ]
 
 
@@ -108,7 +116,7 @@ def _cache_mount(settings: Settings) -> list[str]:
     return ["--tmpfs", f"/cache:rw,nosuid,size=2g,uid={SANDBOX_UID},gid={SANDBOX_UID}"]
 
 
-def _scan_arguments(diff: bool, offline: bool) -> list[str]:
+def _scan_arguments(diff: bool, offline: bool, history: bool) -> list[str]:
     """The `scanner scan` command line run inside the container."""
     args = [
         "scan", "/scan",
@@ -120,14 +128,15 @@ def _scan_arguments(diff: bool, offline: bool) -> list[str]:
         args += ["--base-path", "/base"]
     if offline:
         args += ["--offline", "--semgrep-rules", "/mirror/semgrep-rules"]
+    if history:
+        args += ["--history"]
     return args
 
 
-def _run_local(
-    source_dir: Path, out_dir: Path, base_dir: Path | None, on_progress: ProgressCallback | None
-) -> SandboxResult:
+def _run_local(dirs: SandboxDirs, on_progress: ProgressCallback | None) -> SandboxResult:
     """Unsandboxed, for development and tests only."""
-    config = Config()
+    source_dir, out_dir, base_dir = dirs.source, dirs.out, dirs.base
+    config = Config(history=str(dirs.history) if dirs.history else None)
     plugins = build_plugins(config.scanners.enabled)
     progress = (
         ProgressTracker([p.name for p in plugins], on_progress, passes=1 if base_dir is None else 2)
@@ -155,16 +164,12 @@ class ProgressWatch:
 
 
 def run_in_sandbox(
-    settings: Settings,
-    scan_id: str,
-    source_dir: Path,
-    out_dir: Path,
-    base_dir: Path | None = None,
-    watch: ProgressWatch | None = None,
+    settings: Settings, scan_id: str, dirs: SandboxDirs, watch: ProgressWatch | None = None
 ) -> SandboxResult:
     if settings.sandbox_mode == "local":
-        return _run_local(source_dir, out_dir, base_dir, watch.on_progress if watch else None)
-    command = docker_command(settings, scan_id, source_dir, out_dir, base_dir)
+        return _run_local(dirs, watch.on_progress if watch else None)
+    command = docker_command(settings, scan_id, dirs)
+    out_dir = dirs.out
     progress_path = out_dir / PROGRESS_FILE
     last_seen: ScanProgress | None = None
 

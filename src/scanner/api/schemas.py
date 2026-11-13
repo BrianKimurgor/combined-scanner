@@ -17,6 +17,8 @@ class GitScanRequest(BaseModel):
     # With base set, ref is the head: both revisions are scanned and only new findings gate.
     base: Annotated[str, StringConstraints(min_length=1, max_length=200)] | None = None
     baseline_id: int | None = None  # findings in this baseline are accepted
+    # Also read every commit (up to the server's limit) for secrets; not with base.
+    history: bool = False
 
 
 class FindingQuery(BaseModel):
@@ -67,6 +69,7 @@ class ScanStatus(BaseModel):
     metrics: dict[str, float] = Field(default_factory=dict)
     base: str | None = None
     baseline_id: int | None = None
+    history: bool = False
     diff: DiffInfo | None = None
     baseline: BaselineInfo | None = None
     notices: list[str] = Field(default_factory=list)
@@ -100,6 +103,7 @@ class ScanStatus(BaseModel):
             metrics=summary.get("metrics", {}),
             base=scan.base_ref,
             baseline_id=scan.baseline_id,
+            history=bool(scan.history),
             diff=summary.get("diff"),
             baseline=summary.get("baseline"),
             notices=summary.get("notices", []),

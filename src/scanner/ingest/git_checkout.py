@@ -115,6 +115,9 @@ class FetchOptions:
     timeout: int = 300
     limits: ExtractLimits = field(default_factory=ExtractLimits)
     runner: Runner = _run  # replaced in tests to record or fake the git calls
+    depth: int = 1  # how many commits to fetch, counting back from the ref
+    # Keep the git data here, as a bare repository, instead of deleting it (history scans).
+    history_dest: Path | None = None
 
 
 def _git_env(home: str, protocol: str) -> dict[str, str]:
@@ -130,7 +133,9 @@ def _git_env(home: str, protocol: str) -> dict[str, str]:
     }
 
 
-def _git_steps(dest: Path, protocol: str, url: str, ref: str) -> tuple[int, list[list[str]]]:
+def _git_steps(
+    dest: Path, protocol: str, url: str, ref: str, depth: int
+) -> tuple[int, list[list[str]]]:
     """The git commands that fetch one ref, and how many leading arguments they share."""
     git = [
         "git",
@@ -142,7 +147,7 @@ def _git_steps(dest: Path, protocol: str, url: str, ref: str) -> tuple[int, list
         "-c", "core.fsmonitor=false",
         "-C", str(dest),
     ]  # fmt: skip
-    fetch = ["fetch", "--quiet", "--depth", "1", "--no-tags", "--no-recurse-submodules"]
+    fetch = ["fetch", "--quiet", "--depth", str(depth), "--no-tags", "--no-recurse-submodules"]
     return len(git), [
         git + ["init", "--quiet", "--template="],
         git + [*fetch, "--", url, ref],
@@ -150,15 +155,42 @@ def _git_steps(dest: Path, protocol: str, url: str, ref: str) -> tuple[int, list
     ]
 
 
+def _keep_history(dest: Path, keep: Path, env: dict[str, str], opts: FetchOptions) -> None:
+    """Move the fetched git data out of the tree and make it a bare repository.
+
+    The scanned commit becomes branch `scan`: tools that clone the repository copy branches,
+    not a detached HEAD.
+    """
+    os.replace(dest / ".git", keep)
+    git = ["git", "-c", f"core.hooksPath={os.devnull}", "--git-dir", str(keep)]
+    for step in (
+        [*git, "config", "core.bare", "true"],
+        [*git, "update-ref", "refs/heads/scan", "HEAD"],
+        [*git, "symbolic-ref", "HEAD", "refs/heads/scan"],
+    ):
+        if opts.runner(step, env, opts.timeout).returncode != 0:
+            raise UnsafeSourceError("could not prepare the repository history")
+
+
+def _discard(*paths: Path | None) -> None:
+    for path in paths:
+        if path is not None:
+            remove_tree(path, ignore_errors=True)
+
+
 def fetch_ref(url: str, ref: str, dest: Path, options: FetchOptions | None = None) -> None:
-    """Fetch one ref shallowly into dest and drop .git; url and ref must already be validated."""
+    """Fetch a ref into dest, without .git; url and ref must already be validated.
+
+    With options.history_dest, the fetched commits are kept there as a bare repository.
+    """
     opts = options or FetchOptions()
+    keep = opts.history_dest
     if dest.exists() and any(dest.iterdir()):
         raise FileExistsError(f"destination is not empty: {dest}")
     dest.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="git-home-") as home:
         env = _git_env(home, opts.protocol)
-        shared, steps = _git_steps(dest, opts.protocol, url, ref)
+        shared, steps = _git_steps(dest, opts.protocol, url, ref, opts.depth)
         try:
             for step in steps:
                 done = opts.runner(step, env, opts.timeout)
@@ -166,26 +198,32 @@ def fetch_ref(url: str, ref: str, dest: Path, options: FetchOptions | None = Non
                     raise UnsafeSourceError(
                         f"git {step[shared]} failed: could not fetch the repository or ref"
                     )
+            if keep is not None:
+                _keep_history(dest, keep, env, opts)
         except subprocess.TimeoutExpired as exc:
-            remove_tree(dest, ignore_errors=True)
+            _discard(dest, keep)
             raise UnsafeSourceError("fetching the repository timed out") from exc
         except BaseException:
-            remove_tree(dest, ignore_errors=True)
+            _discard(dest, keep)
             raise
-    try:
-        remove_tree(dest / ".git", ignore_errors=False)
-    except OSError as exc:
-        remove_tree(dest, ignore_errors=True)
-        raise UnsafeSourceError("could not clean up the fetched repository") from exc
+    if keep is None:
+        try:
+            remove_tree(dest / ".git", ignore_errors=False)
+        except OSError as exc:
+            _discard(dest)
+            raise UnsafeSourceError("could not clean up the fetched repository") from exc
     try:
         check_tree_size(dest, opts.limits)
+        if keep is not None:
+            check_tree_size(keep, opts.limits)
     except UnsafeSourceError:
-        remove_tree(dest, ignore_errors=True)
+        _discard(dest, keep)
         raise
 
 
-def git_checkout(
-    url: str, ref: str, dest: Path, *, timeout: int = 300, limits: ExtractLimits | None = None
-) -> None:
-    options = FetchOptions(timeout=timeout, limits=limits or ExtractLimits())
-    fetch_ref(validate_git_url(url), validate_ref(ref), dest, options)
+def git_checkout(url: str, ref: str, dest: Path, options: FetchOptions | None = None) -> None:
+    """Validate the URL and ref, then fetch; options.protocol is always https here."""
+    opts = options or FetchOptions()
+    if opts.protocol != "https":
+        raise UnsafeSourceError("only https repository URLs are allowed")
+    fetch_ref(validate_git_url(url), validate_ref(ref), dest, opts)

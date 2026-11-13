@@ -12,7 +12,8 @@ def _cell(value: object) -> str:
 def _location(finding: Finding) -> str:
     if not finding.file:
         return "-"
-    return f"{finding.file}:{finding.line_start}" if finding.line_start else finding.file
+    where = f"{finding.file}:{finding.line_start}" if finding.line_start else finding.file
+    return f"{where} (commit {finding.commit[:8]})" if finding.commit else where
 
 
 def _table(header: list[str], rows: list[list[object]]) -> list[str]:

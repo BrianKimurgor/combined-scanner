@@ -31,6 +31,8 @@ class Settings:
     max_scans_per_hour: int = 30
     max_queued_scans: int = 200
     scan_timeout_seconds: int = 1800
+    # History scans fetch up to this many commits, counting back from the scanned revision.
+    history_max_commits: int = 1000
     sandbox_mode: SandboxMode = "docker"
     sandbox_image: str = "code-scanner-worker"
     sandbox_network: str = "bridge"
@@ -102,6 +104,7 @@ class Settings:
             max_scans_per_hour=_positive_int(env, "SCANNER_MAX_SCANS_PER_HOUR", 30),
             max_queued_scans=_positive_int(env, "SCANNER_MAX_QUEUED_SCANS", 200),
             scan_timeout_seconds=_positive_int(env, "SCANNER_SCAN_TIMEOUT_SECONDS", 1800),
+            history_max_commits=_positive_int(env, "SCANNER_HISTORY_MAX_COMMITS", 1000),
             sandbox_mode=mode,
             sandbox_image=env.get("SCANNER_SANDBOX_IMAGE", "code-scanner-worker"),
             sandbox_network=env.get("SCANNER_SANDBOX_NETWORK", "bridge"),

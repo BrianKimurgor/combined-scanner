@@ -189,7 +189,8 @@ function whereText(finding) {
     finding.line_start && finding.line_end && finding.line_end !== finding.line_start
       ? `${finding.line_start}-${finding.line_end}`
       : finding.line_start || "";
-  return range ? `${finding.file}:${range}` : finding.file;
+  const where = range ? `${finding.file}:${range}` : finding.file;
+  return finding.commit ? `${where} (commit ${finding.commit.slice(0, 8)})` : where;
 }
 
 // ---------------------------------------------------------------- theme
@@ -442,6 +443,7 @@ async function newScanView(token) {
   const url = h("input", { type: "text", id: "url", placeholder: "https://github.com/owner/repo.git" });
   const ref = h("input", { type: "text", id: "ref", value: "HEAD" });
   const base = h("input", { type: "text", id: "base", placeholder: "main (optional)" });
+  const history = h("input", { type: "checkbox", id: "history" });
   const baseline = h(
     "select",
     { id: "baseline" },
@@ -459,6 +461,8 @@ async function newScanView(token) {
       h("div", {}, h("label", { for: "base", text: "Compare against (diff scan)" }), base),
     ),
     h("p", { class: "muted", text: "With a base revision, only findings new in the scanned revision count." }),
+    h("label", { class: "inline check", for: "history" }, history, "Also scan every commit for secrets, not only the latest one"),
+    h("p", { class: "muted", text: "Finds secrets that were deleted later but are still in the history. Not with a base revision." }),
   );
   const zipButton = h("button", { type: "button", class: "on", onclick: () => setMode("zip") }, icon("upload", "sm"), "Upload zip");
   const gitButton = h("button", { type: "button", onclick: () => setMode("git") }, icon("git", "sm"), "Git repository");
@@ -488,6 +492,7 @@ async function newScanView(token) {
           } else {
             const body = { git_url: url.value.trim(), ref: ref.value.trim() || "HEAD" };
             if (base.value.trim()) body.base = base.value.trim();
+            if (history.checked) body.history = true;
             if (baseline.value) body.baseline_id = Number(baseline.value);
             created = await api("/scans", { method: "POST", body });
           }
@@ -703,6 +708,7 @@ function detailPanel(scan, finding, reload) {
       "dl",
       { class: "facts" },
       fact("Where", whereText(finding)),
+      fact("Commit", finding.commit),
       fact("Found by", (finding.sources || [finding.tool]).join(", ")),
       fact("Rule", finding.rule_id),
       fact("Package", finding.package ? `${finding.package} ${finding.version || ""}`.trim() : ""),

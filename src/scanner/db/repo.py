@@ -87,6 +87,7 @@ class NewScan:
     git_ref: str | None = None
     base_ref: str | None = None  # set for diff scans
     baseline_id: int | None = None  # findings in this baseline are accepted
+    history: bool = False  # git scans: also read every commit for secrets
 
 
 def create_scan(session: Session, owner_id: int, new: NewScan, scan_id: str | None = None) -> Scan:
@@ -99,6 +100,7 @@ def create_scan(session: Session, owner_id: int, new: NewScan, scan_id: str | No
         git_ref=new.git_ref,
         base_ref=new.base_ref,
         baseline_id=new.baseline_id,
+        history=new.history,
     )
     session.add(scan)
     session.flush()

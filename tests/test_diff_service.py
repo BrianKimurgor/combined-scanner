@@ -9,14 +9,14 @@ from scanner.db import repo
 from scanner.db.session import init_db, make_engine, make_session_factory, session_scope
 from scanner.settings import Settings
 from scanner.worker import runner
-from scanner.worker.sandbox import docker_command
+from scanner.worker.sandbox import SandboxDirs, docker_command
 from test_api import Env, build_env
 
 URL = "https://github.com/acme/app"
 
 
 def _fake_checkout(trees: dict[str, dict[str, str]]) -> Any:
-    def checkout(url: str, ref: str, dest: Path, *, timeout: int, limits: object = None) -> None:
+    def checkout(url: str, ref: str, dest: Path, options: object = None) -> None:
         dest.mkdir(parents=True)
         for name, content in trees[ref].items():
             (dest / name).write_text(content, encoding="utf-8")
@@ -137,7 +137,7 @@ def test_docker_command_mounts_the_base_read_only(tmp_path: Path) -> None:
     src, out, base = tmp_path / "src", tmp_path / "out", tmp_path / "base"
     for directory in (src, out, base):
         directory.mkdir()
-    command = docker_command(settings, "abc", src, out, base)
+    command = docker_command(settings, "abc", SandboxDirs(src, out, base))
     assert f"type=bind,source={base.resolve()},target=/base,readonly" in command
     assert command[-2:] == ["--base-path", "/base"]
     assert command[-11:-2] == [
@@ -151,7 +151,7 @@ def test_docker_command_mounts_the_base_read_only(tmp_path: Path) -> None:
         "--progress",
         "/out/progress.json",
     ]
-    without = docker_command(settings, "abc", src, out)
+    without = docker_command(settings, "abc", SandboxDirs(src, out))
     assert not any("/base" in part for part in without)
 
 

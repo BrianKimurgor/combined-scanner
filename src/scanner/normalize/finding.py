@@ -69,7 +69,8 @@ def dedupe_key(finding: "Finding") -> tuple[str, ...]:
             finding.rule_id.upper(),
         )
     if finding.category is Category.SECRET:
-        return ("secret", finding.file or "", str(finding.line_start or 0))
+        key = ("secret", finding.file or "", str(finding.line_start or 0))
+        return (*key, finding.commit) if finding.commit else key
     if finding.category is Category.LICENSE:
         return ("license", normalize_package(finding.package), finding.rule_id, finding.file or "")
     return (
@@ -114,6 +115,7 @@ class Finding(BaseModel):
     fixed_version: str | None = None
     fingerprint: str = ""
     secret_masked: str | None = None  # the raw secret is never stored
+    commit: str | None = None  # history scans: the commit the finding was found in
     sources: list[str] = Field(default_factory=list)
     snippet: Snippet | None = None
     is_new: bool | None = None  # set in diff or baseline mode: absent from the reference
@@ -126,7 +128,7 @@ class Finding(BaseModel):
         if not self.fingerprint:
             self.fingerprint = _digest(dedupe_key(self))
         if not self.id:
-            self.id = _digest(
-                (self.tool, self.rule_id, self.file, self.line_start, self.package, self.version)
-            )
+            where = (self.file, self.line_start, self.package, self.version)
+            parts = (self.tool, self.rule_id, *where)
+            self.id = _digest((*parts, self.commit) if self.commit else parts)
         return self

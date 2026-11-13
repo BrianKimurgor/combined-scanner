@@ -162,7 +162,8 @@ tr.detail-row > td { background: var(--hover); padding: 0; }
   function percent(n, total) { return total ? Math.round((n * 1000) / total) / 10 : 0; }
   function location(f) {
     if (!f.file) return '-';
-    return f.line_start ? f.file + ':' + f.line_start : f.file;
+    const where = f.line_start ? f.file + ':' + f.line_start : f.file;
+    return f.commit ? where + ' @ ' + f.commit.slice(0, 8) : where;
   }
 
   const app = document.getElementById('app');
@@ -366,9 +367,10 @@ tr.detail-row > td { background: var(--hover); padding: 0; }
 
   function whereText(f) {
     if (!f.file) return 'Not tied to a specific file';
-    if (!f.line_start) return f.file;
+    const commit = f.commit ? ', in commit ' + f.commit.slice(0, 8) : '';
+    if (!f.line_start) return f.file + commit;
     const end = f.line_end && f.line_end !== f.line_start ? '\u2013' + f.line_end : '';
-    return f.file + ', line ' + f.line_start + end;
+    return f.file + ', line ' + f.line_start + end + commit;
   }
 
   function fact(list, label, value) {

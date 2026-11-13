@@ -14,7 +14,7 @@ from scanner.db.models import Scan, utcnow
 from scanner.db.session import init_db, make_engine, make_session_factory, session_scope
 from scanner.settings import Settings
 from scanner.worker import runner
-from scanner.worker.sandbox import SandboxResult, docker_command
+from scanner.worker.sandbox import SandboxDirs, SandboxResult, docker_command
 
 
 @pytest.fixture
@@ -244,7 +244,7 @@ def test_docker_command_is_locked_down(tmp_path: Path) -> None:
     src, out = tmp_path / "src", tmp_path / "out"
     src.mkdir()
     out.mkdir()
-    command = docker_command(settings, "abc123", src, out)
+    command = docker_command(settings, "abc123", SandboxDirs(src, out))
     pairs = list(zip(command, command[1:], strict=False))
     assert command[:3] == ["docker", "run", "--rm"]
     assert "--read-only" in command
@@ -266,14 +266,14 @@ def test_docker_command_is_locked_down(tmp_path: Path) -> None:
 
 
 def test_docker_command_stages_the_source_on_a_tmpfs(tmp_path: Path) -> None:
-    command = docker_command(Settings(data_dir=tmp_path), "abc", tmp_path, tmp_path)
+    command = docker_command(Settings(data_dir=tmp_path), "abc", SandboxDirs(tmp_path, tmp_path))
     assert any(part.startswith("/work:rw,nosuid") for part in command)
     assert "SCANNER_STAGE_DIR=/work" in command
 
 
 def test_docker_command_without_a_cache_volume_uses_tmpfs(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path, sandbox_cache_volume="")
-    command = docker_command(settings, "abc", tmp_path, tmp_path)
+    command = docker_command(settings, "abc", SandboxDirs(tmp_path, tmp_path))
     assert not any("type=volume" in part for part in command)
     assert any(part.startswith("/cache:rw") for part in command)
 
@@ -282,7 +282,7 @@ def test_docker_command_rejects_paths_that_could_inject_mount_options(tmp_path: 
     bad = tmp_path / "a,readonly=false"
     bad.mkdir()
     with pytest.raises(Exception, match="commas"):
-        docker_command(Settings(data_dir=tmp_path), "abc", bad, tmp_path)
+        docker_command(Settings(data_dir=tmp_path), "abc", SandboxDirs(bad, tmp_path))
 
 
 def test_settings_from_env(tmp_path: Path) -> None:

@@ -96,6 +96,10 @@ class ScannerPlugin(ABC):
     def available(self) -> bool:
         return self.unavailable_reason() is None
 
+    def command_env(self, ctx: ScanContext) -> dict[str, str]:
+        """Environment added for this run, on top of the class-level env."""
+        return {}
+
     def skip_reason(self, ctx: ScanContext) -> str | None:
         """Why this tool cannot run with this configuration, if it cannot."""
         return None
@@ -132,7 +136,7 @@ class ScannerPlugin(ABC):
             completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
                 args,
                 cwd=ctx.workdir,
-                env={**os.environ, **self.env},
+                env={**os.environ, **self.env, **self.command_env(ctx)},
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

@@ -8,6 +8,10 @@ The scanner reads code it does not trust, so the design assumes a scanned projec
   Absolute paths, `..`, links and device files are refused.
 - **Git URLs** must be https and are checked before use; refs are validated. Checkouts disable hooks
   and are size-limited. Revisions are exported without running anything from the repository.
+- **History scans** keep the fetched commits as a separate bare repository, size-limited like the
+  checkout and mounted read-only in the scan container; the scanned tree itself still has no `.git`.
+  Inside the container, git trusts only that one repository (a private `safe.directory` setting),
+  and author names, emails and commit messages from the history are never stored.
 - **Configuration** is read only from `--config` or the working directory, never from the project.
 
 ## Isolation

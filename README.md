@@ -77,12 +77,28 @@ scanner scan ./project                               # JSON report on stdout
 scanner scan ./project -f html -o report.html        # also: md, sarif, comment
 scanner scan ./project --fail-on medium              # stricter gate
 scanner scan ./project --base main                   # only what changed since main
+scanner scan ./project --history                     # secrets in every commit, too
 scanner baseline ./project -o baseline.json          # accept today's findings
 scanner scan ./project --baseline baseline.json      # only new findings gate
 scanner render report.json -f md                     # re-render a saved report
 ```
 
 Exit codes: `0` gate passed, `1` gate failed, `2` a scanner or configuration error, or no scanner ran.
+
+### Scanning the git history
+
+A secret that was committed and deleted later is still in the repository's history, and anyone
+who clones it can read it. With `--history` (or "Also scan every commit" when scanning a git URL
+in the web UI), Gitleaks and TruffleHog read every commit instead of only the current files, and
+each finding names the commit it was found in. Rotate a secret found this way: deleting it in a
+new commit does not remove it from the history.
+
+- The web UI and API fetch up to `SCANNER_HISTORY_MAX_COMMITS` commits (1000 by default) of the
+  scanned revision; the other scanners still look at the current files only.
+- Locally, `--history` reads the repository that contains the scanned folder. Uncommitted changes
+  are not in the history, so commit them first or scan without `--history` as well.
+- It cannot be combined with `--base` or `--base-path`. Zip uploads have no history to read.
+- Author names, emails and commit messages are never stored, only the commit hash.
 
 Settings live in a `scanner.yml` in the current directory or at `--config`. A `scanner.yml` inside the
 scanned project is never read.
