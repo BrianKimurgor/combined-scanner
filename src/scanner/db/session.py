@@ -39,9 +39,10 @@ def _add_missing_columns(engine: Engine) -> None:
             for column in table.columns:
                 if column.name not in existing:
                     kind = column.type.compile(dialect=engine.dialect)
-                    connection.execute(
-                        text(f"ALTER TABLE {table.name} ADD COLUMN {column.name} {kind}")
-                    )
+                    # Every name comes from this app's own table definitions, never from input,
+                    # and DDL cannot take bound parameters, so building the text here is safe.
+                    statement = f"ALTER TABLE {table.name} ADD COLUMN {column.name} {kind}"
+                    connection.execute(text(statement))  # nosemgrep
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:

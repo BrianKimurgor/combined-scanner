@@ -11,8 +11,8 @@ from fakes import DuplicationPlugin, MissingPlugin, VulnGrepPlugin
 from scanner.cli import app
 from scanner.core import baseline as baseline_module
 from scanner.core.config import Config, Suppression, load_config
-from scanner.core.diff_scan import run_diff_scan
-from scanner.core.orchestrator import run_scan
+from scanner.core.diff_scan import Revision, run_diff_scan
+from scanner.core.orchestrator import ScanOptions, run_scan
 from scanner.core.policy import apply_policy
 from scanner.core.result import ScanReport, exit_code
 
@@ -32,7 +32,8 @@ def _scan(
     tmp_path: Path, files: dict[str, str], config: Config | None = None, **kwargs: object
 ) -> ScanReport:
     root = _tree(tmp_path / "src", files)
-    return run_scan(root, config or Config(), [VulnGrepPlugin()], tmp_path / "out", **kwargs)  # type: ignore[arg-type]
+    options = ScanOptions(**kwargs)  # type: ignore[arg-type]
+    return run_scan(root, config or Config(), [VulnGrepPlugin()], tmp_path / "out", options)
 
 
 def _suppression(fingerprint: str, **overrides: object) -> Suppression:
@@ -158,22 +159,21 @@ def test_suppressed_findings_are_left_out_of_a_baseline(tmp_path: Path) -> None:
 def test_a_baseline_also_applies_in_diff_mode(tmp_path: Path) -> None:
     base = _tree(tmp_path / "base", {"a.py": "ok\n"})
     head = _tree(tmp_path / "head", {"a.py": "VULN legacy\n"})
-    plain = run_diff_scan(
-        base, head, Config(), [VulnGrepPlugin()], tmp_path / "o1", base_label="b", head_label="h"
-    )
+    revisions = (Revision(base, "b"), Revision(head, "h"))
+    plain = run_diff_scan(*revisions, Config(), [VulnGrepPlugin()], tmp_path / "o1")
     assert not plain.gate.passed
     accepted = baseline_module.from_report(plain)
     rerun = run_diff_scan(
-        base, head, Config(), [VulnGrepPlugin()], tmp_path / "o2",
-        base_label="b", head_label="h", baseline=accepted,
-    )  # fmt: skip
+        *revisions, Config(), [VulnGrepPlugin()], tmp_path / "o2", ScanOptions(baseline=accepted)
+    )
     assert rerun.gate.passed and rerun.diff is not None and rerun.diff.new_count == 0
 
 
 def test_duplication_is_judged_against_the_baseline(tmp_path: Path) -> None:
     def scan(percent: str, **kwargs: object) -> ScanReport:
         root = _tree(tmp_path / f"r{percent}", {"PERCENT": percent})
-        return run_scan(root, Config(), [DuplicationPlugin()], tmp_path / f"o{percent}", **kwargs)  # type: ignore[arg-type]
+        options = ScanOptions(**kwargs)  # type: ignore[arg-type]
+        return run_scan(root, Config(), [DuplicationPlugin()], tmp_path / f"o{percent}", options)
 
     baseline = baseline_module.from_report(scan("12"))
     assert not scan("12").gate.passed  # over the 5% limit

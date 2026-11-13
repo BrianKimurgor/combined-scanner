@@ -51,7 +51,8 @@ def _download(url: str, dest: Path) -> None:
     partial = dest.with_name(dest.name + ".part")
     size = 0
     try:
-        with urllib.request.urlopen(url, timeout=120) as response, partial.open("wb") as out:  # noqa: S310 - https only
+        # The URL is checked above to be https, so file:// and other schemes cannot reach here.
+        with urllib.request.urlopen(url, timeout=120) as response, partial.open("wb") as out:  # noqa: S310  # nosemgrep
             while chunk := response.read(CHUNK):
                 size += len(chunk)
                 if size > MAX_DOWNLOAD_BYTES:

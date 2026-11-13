@@ -78,23 +78,27 @@ def count_queued(session: Session) -> int:
     )
 
 
-def create_scan(
-    session: Session,
-    owner_id: int,
-    source_type: str,
-    source_ref: str | None,
-    git_ref: str | None = None,
-    scan_id: str | None = None,
-    base_ref: str | None = None,
-) -> Scan:
+@dataclass(frozen=True)
+class NewScan:
+    """What a queued scan should look at."""
+
+    source_type: str  # zip | git
+    source_ref: str | None  # the upload's name, or the git URL
+    git_ref: str | None = None
+    base_ref: str | None = None  # set for diff scans
+    baseline_id: int | None = None  # findings in this baseline are accepted
+
+
+def create_scan(session: Session, owner_id: int, new: NewScan, scan_id: str | None = None) -> Scan:
     scan = Scan(
         id=scan_id or uuid.uuid4().hex,
         owner_id=owner_id,
         status="queued",
-        source_type=source_type,
-        source_ref=source_ref,
-        git_ref=git_ref,
-        base_ref=base_ref,
+        source_type=new.source_type,
+        source_ref=new.source_ref,
+        git_ref=new.git_ref,
+        base_ref=new.base_ref,
+        baseline_id=new.baseline_id,
     )
     session.add(scan)
     session.flush()
@@ -203,31 +207,39 @@ def store_report(session: Session, scan_id: str, report: ScanReport, exit_code: 
     )
 
 
+@dataclass(frozen=True)
+class FindingFilter:
+    """Optional conditions on a scan's findings; None means any value."""
+
+    severity: str | None = None
+    category: str | None = None
+    tool: str | None = None  # must already be validated against the registry
+    is_new: bool | None = None
+    suppressed: bool | None = None
+
+
 def list_findings(
     session: Session,
     scan_id: str,
+    filters: FindingFilter | None = None,
     *,
-    severity: str | None = None,
-    category: str | None = None,
-    tool: str | None = None,
-    is_new: bool | None = None,
-    suppressed: bool | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[int, Sequence[str]]:
-    """Return (total, finding JSON strings) for one scan; tool must already be validated."""
+    """Return (total, finding JSON strings) for one scan."""
+    f = filters or FindingFilter()
     conditions = [FindingRow.scan_id == scan_id]
-    if suppressed is not None:
+    if f.suppressed is not None:
         flagged = FindingRow.suppressed.is_(True)
-        conditions.append(flagged if suppressed else ~flagged)
-    if is_new is not None:
-        conditions.append(FindingRow.is_new == is_new)
-    if severity:
-        conditions.append(FindingRow.severity == severity)
-    if category:
-        conditions.append(FindingRow.category == category)
-    if tool:
-        conditions.append(FindingRow.sources.like(f"%,{tool},%"))
+        conditions.append(flagged if f.suppressed else ~flagged)
+    if f.is_new is not None:
+        conditions.append(FindingRow.is_new == f.is_new)
+    if f.severity:
+        conditions.append(FindingRow.severity == f.severity)
+    if f.category:
+        conditions.append(FindingRow.category == f.category)
+    if f.tool:
+        conditions.append(FindingRow.sources.like(f"%,{f.tool},%"))
     total = int(
         session.scalar(select(func.count()).select_from(FindingRow).where(*conditions)) or 0
     )

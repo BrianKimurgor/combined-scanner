@@ -41,35 +41,48 @@ class OsvPlugin(ScannerPlugin):
         for result in data.get("results") or []:
             source = rel_path(result.get("source", {}).get("path", ""), ctx.workdir)
             for entry in result.get("packages") or []:
-                package = entry.get("package", {})
-                name, version = package.get("name"), package.get("version")
-                scores = {
-                    vuln_id: group.get("max_severity")
-                    for group in entry.get("groups") or []
-                    for vuln_id in group.get("ids", [])
-                }
-                for vuln in entry.get("vulnerabilities") or []:
-                    vuln_id = str(vuln["id"])
-                    cve = next((a for a in vuln.get("aliases", []) if a.startswith("CVE-")), None)
-                    rule_id = vuln_id if vuln_id.startswith("CVE-") else (cve or vuln_id)
-                    label = vuln.get("database_specific", {}).get("severity")
-                    summary = vuln.get("summary") or vuln.get("details", "")[:200] or rule_id
-                    fixed = _fixed_version(vuln, name)
-                    message = f"{name} {version} is affected by {rule_id}"
-                    if fixed:
-                        message += f"; fixed in {fixed}"
-                    findings.append(
-                        Finding(
-                            tool=self.name,
-                            category=Category.DEPENDENCY,
-                            rule_id=rule_id,
-                            severity=severity.osv(scores.get(vuln_id), label),
-                            title=summary,
-                            message=message,
-                            file=source or None,
-                            package=name,
-                            version=version,
-                            fixed_version=fixed,
-                        )
-                    )
+                findings += self._package_findings(entry, source or None)
         return Parsed(findings)
+
+    def _package_findings(self, entry: dict[str, Any], source: str | None) -> list[Finding]:
+        """One finding per vulnerability reported for one package."""
+        package = entry.get("package", {})
+        scores = {
+            vuln_id: group.get("max_severity")
+            for group in entry.get("groups") or []
+            for vuln_id in group.get("ids", [])
+        }
+        return [
+            self._finding(vuln, package, scores, source)
+            for vuln in entry.get("vulnerabilities") or []
+        ]
+
+    def _finding(
+        self,
+        vuln: dict[str, Any],
+        package: dict[str, Any],
+        scores: dict[str, Any],
+        source: str | None,
+    ) -> Finding:
+        name, version = package.get("name"), package.get("version")
+        vuln_id = str(vuln["id"])
+        cve = next((a for a in vuln.get("aliases", []) if a.startswith("CVE-")), None)
+        rule_id = vuln_id if vuln_id.startswith("CVE-") else (cve or vuln_id)
+        label = vuln.get("database_specific", {}).get("severity")
+        summary = vuln.get("summary") or vuln.get("details", "")[:200] or rule_id
+        fixed = _fixed_version(vuln, name)
+        message = f"{name} {version} is affected by {rule_id}"
+        if fixed:
+            message += f"; fixed in {fixed}"
+        return Finding(
+            tool=self.name,
+            category=Category.DEPENDENCY,
+            rule_id=rule_id,
+            severity=severity.osv(scores.get(vuln_id), label),
+            title=summary,
+            message=message,
+            file=source,
+            package=name,
+            version=version,
+            fixed_version=fixed,
+        )

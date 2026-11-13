@@ -1,0 +1,30 @@
+# Settings for scanning this repository with itself: run `scanner scan .` from the repository root
+# (the scanner reads scanner.yml from the current directory, never from the folder it scans).
+# Each suppression is a finding that was reviewed and accepted; it stays in the report, marked as
+# suppressed, and counts again after its review date.
+
+suppressions:
+  - fingerprint: "1afef4fe977fd7c5"
+    reason: >-
+      `scanner scan` has 13 parameters because each Typer command-line option is a function
+      parameter. Its logic lives in small helpers; the options themselves cannot be grouped.
+    expires: 2027-11-01
+  - fingerprint: "e42cd13b689b59e1"
+    reason: Test data. A public test card number that checks the Presidio card filter.
+    expires: 2027-11-01
+  - fingerprint: "ad3a4cd5608acd3a"
+    reason: Test data. A sample email address that checks Presidio detection.
+    expires: 2027-11-01
+  - fingerprint: "7251e5fb3a45a835"
+    reason: >-
+      Not an email address: it is the password and host part of a URL with credentials, a test
+      input the API must refuse.
+    expires: 2027-11-01
+  - fingerprint: "27fb94e13cc92df3"
+    reason: >-
+      Not an email address: it is the user and host part of an ssh:// URL, a test input that
+      must be refused because only https is allowed.
+    expires: 2027-11-01
+  - fingerprint: "ecefe75873a49774"
+    reason: The maintainer's public contact address in the package metadata, published on purpose.
+    expires: 2027-11-01

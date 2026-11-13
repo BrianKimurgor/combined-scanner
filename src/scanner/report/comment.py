@@ -16,14 +16,25 @@ def _location(finding: Finding) -> str:
 
 def render(report: ScanReport) -> str:
     new = report.new_findings()
-    diff = report.diff
-    verdict = "passed" if report.gate.passed else "failed"
-    if diff or report.baseline:
-        title = f"Code scan: {len(new)} new finding(s), quality gate {verdict}"
-    else:
-        title = f"Code scan: {len(new)} finding(s), quality gate {verdict}"
-    lines = [MARKER, f"## {title}", ""]
+    lines = [MARKER, f"## {_title(report, len(new))}", ""]
+    facts = _facts(report)
+    if facts:
+        lines += [" · ".join(facts), ""]
+    lines += _warnings(report)
+    lines += _findings_table(new)
+    return _truncate("\n".join(lines).rstrip() + "\n")
 
+
+def _title(report: ScanReport, new_count: int) -> str:
+    verdict = "passed" if report.gate.passed else "failed"
+    if report.diff or report.baseline:
+        return f"Code scan: {new_count} new finding(s), quality gate {verdict}"
+    return f"Code scan: {new_count} finding(s), quality gate {verdict}"
+
+
+def _facts(report: ScanReport) -> list[str]:
+    """One summary line: what was compared and what is not shown."""
+    diff = report.diff
     facts = []
     if diff:
         facts.append(
@@ -39,9 +50,12 @@ def render(report: ScanReport) -> str:
         facts.append(f"{report.suppressed_count()} suppressed")
     if report.score.percent is not None:
         facts.append(f"health score {report.score.percent:g}%")
-    if facts:
-        lines += [" · ".join(facts), ""]
+    return facts
 
+
+def _warnings(report: ScanReport) -> list[str]:
+    """Why the gate failed, notices, and scanners that did not finish."""
+    lines: list[str] = []
     if not report.any_scanner_ran():
         lines += [
             "> **Warning:** no scanner ran successfully, so this result is not meaningful.",
@@ -58,7 +72,11 @@ def render(report: ScanReport) -> str:
             f"- {code_span(t.tool)}: {escape_text(t.message or t.status.value)}" for t in problems
         ]
         lines.append("")
+    return lines
 
+
+def _findings_table(new: list[Finding]) -> list[str]:
+    lines: list[str] = []
     if new:
         lines += ["| Severity | Rule | Location | Finding |", "|---|---|---|---|"]
         for finding in new[:MAX_ROWS]:
@@ -70,7 +88,10 @@ def render(report: ScanReport) -> str:
             lines += ["", f"…and {len(new) - MAX_ROWS} more. See the full report for the rest."]
     else:
         lines.append("No new findings.")
-    text = "\n".join(lines).rstrip() + "\n"
-    return (
-        text if len(text) <= MAX_CHARS else text[:MAX_CHARS].rsplit("\n", 1)[0] + "\n\n…truncated\n"
-    )
+    return lines
+
+
+def _truncate(text: str) -> str:
+    if len(text) <= MAX_CHARS:
+        return text
+    return text[:MAX_CHARS].rsplit("\n", 1)[0] + "\n\n…truncated\n"

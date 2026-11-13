@@ -4,7 +4,7 @@ from datetime import date
 from scanner.core.baseline import Baseline
 from scanner.core.config import Config, Suppression
 from scanner.core.gate import evaluate
-from scanner.core.result import BaselineInfo, ScanReport
+from scanner.core.result import BaselineInfo, DiffInfo, ScanReport
 from scanner.core.score import compute_score
 from scanner.normalize.finding import Finding, Suppressed
 
@@ -65,6 +65,27 @@ def _gate_metrics(
     return gated
 
 
+def _unjudged_copies(report: ScanReport) -> list[Finding]:
+    """Copies with earlier judgements cleared, so applying the policy twice changes nothing."""
+    findings = [f.model_copy(deep=True) for f in report.findings]
+    for finding in findings:
+        finding.suppressed = None
+        if report.diff is None:
+            finding.is_new = None
+    return findings
+
+
+def _recount(diff: DiffInfo | None, active: list[Finding]) -> DiffInfo | None:
+    if diff is None:
+        return None
+    return diff.model_copy(
+        update={
+            "new_count": sum(1 for f in active if f.is_new),
+            "existing_count": sum(1 for f in active if f.is_new is False),
+        }
+    )
+
+
 def apply_policy(
     report: ScanReport,
     config: Config,
@@ -77,13 +98,8 @@ def apply_policy(
 
     Safe to run again on its own output, so reports can be re-judged after the rules change.
     """
-    today = today or date.today()
-    findings = [f.model_copy(deep=True) for f in report.findings]
-    for finding in findings:
-        finding.suppressed = None
-        if report.diff is None:
-            finding.is_new = None
-    notices = _suppress(findings, suppressions, today)
+    findings = _unjudged_copies(report)
+    notices = _suppress(findings, suppressions, today or date.today())
     baseline_info = _apply_baseline(findings, baseline)
 
     active = [f for f in findings if f.suppressed is None]
@@ -91,14 +107,7 @@ def apply_policy(
     reference = (
         report.diff.base_metrics if report.diff else (baseline.metrics if baseline else None)
     )
-    diff = report.diff
-    if diff is not None:
-        diff = diff.model_copy(
-            update={
-                "new_count": sum(1 for f in active if f.is_new),
-                "existing_count": sum(1 for f in active if f.is_new is False),
-            }
-        )
+    diff = _recount(report.diff, active)
     return report.model_copy(
         update={
             "findings": findings,

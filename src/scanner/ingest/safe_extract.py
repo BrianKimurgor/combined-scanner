@@ -132,7 +132,8 @@ def _copy(
 
 def _normalise_permissions(root: Path) -> None:
     for current, _dirs, files in os.walk(root):
-        os.chmod(current, 0o755)  # noqa: S103 - directories must stay traversable for the sandbox user
+        # Directories must stay traversable for the unprivileged sandbox user; files stay 0o644.
+        os.chmod(current, 0o755)  # noqa: S103  # nosemgrep
         for name in files:
             os.chmod(Path(current, name), 0o644)
 

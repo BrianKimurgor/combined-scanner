@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from scanner.ingest.errors import UnsafeSourceError
-from scanner.ingest.git_checkout import fetch_ref, validate_git_url, validate_ref
+from scanner.ingest.git_checkout import FetchOptions, fetch_ref, validate_git_url, validate_ref
 from scanner.ingest.safe_extract import ExtractLimits
 
 PUBLIC = ["93.184.216.34"]
@@ -30,7 +30,7 @@ def test_public_https_url_is_accepted() -> None:
         "file:///etc/passwd",
         "/srv/git/repo",
         "ext::sh -c touch% /tmp/pwned",
-        "https://user:pass@github.com/a/b",
+        "https://user:pass@github.com/a/b",  # trufflehog:ignore - a refused test input
         "https://github.com:22/a/b",
         "https://github.com:8443/a/b",
         "https:///a/b",
@@ -125,7 +125,7 @@ class Recorder:
 
 def test_git_is_locked_down(tmp_path: Path) -> None:
     recorder = Recorder()
-    fetch_ref("https://github.com/a/b", "main", tmp_path / "dest", runner=recorder)
+    fetch_ref("https://github.com/a/b", "main", tmp_path / "dest", FetchOptions(runner=recorder))
     fetch = next(args for args, _ in recorder.calls if "fetch" in args)
     assert fetch[-3:] == ["--", "https://github.com/a/b", "main"]
     for args, env in recorder.calls:
@@ -143,9 +143,8 @@ def test_git_is_locked_down(tmp_path: Path) -> None:
 
 def test_failed_fetch_leaves_nothing_behind(tmp_path: Path) -> None:
     with pytest.raises(UnsafeSourceError, match="could not fetch"):
-        fetch_ref(
-            "https://github.com/a/b", "main", tmp_path / "dest", runner=Recorder(fail_on="fetch")
-        )
+        options = FetchOptions(runner=Recorder(fail_on="fetch"))
+        fetch_ref("https://github.com/a/b", "main", tmp_path / "dest", options)
     assert not (tmp_path / "dest").exists()
 
 
@@ -156,7 +155,7 @@ def test_timeout_is_reported(tmp_path: Path) -> None:
         raise subprocess.TimeoutExpired(args, timeout)
 
     with pytest.raises(UnsafeSourceError, match="timed out"):
-        fetch_ref("https://github.com/a/b", "main", tmp_path / "dest", runner=slow)
+        fetch_ref("https://github.com/a/b", "main", tmp_path / "dest", FetchOptions(runner=slow))
     assert not (tmp_path / "dest").exists()
 
 
@@ -164,13 +163,8 @@ def test_oversized_repository_is_rejected(tmp_path: Path) -> None:
     dest = tmp_path / "dest"
     recorder = Recorder(big_file=dest / "big.bin")
     with pytest.raises(UnsafeSourceError, match="larger"):
-        fetch_ref(
-            "https://github.com/a/b",
-            "main",
-            dest,
-            limits=ExtractLimits(max_total_bytes=100),
-            runner=recorder,
-        )
+        options = FetchOptions(limits=ExtractLimits(max_total_bytes=100), runner=recorder)
+        fetch_ref("https://github.com/a/b", "main", dest, options)
     assert not dest.exists()
 
 
@@ -204,14 +198,19 @@ class TestAgainstRealGit:
         source, sha = repo
         for index, ref in enumerate(["main", "v1", sha]):
             dest = tmp_path / f"dest{index}"
-            fetch_ref(source.as_posix(), ref, dest, protocol="file")
+            fetch_ref(source.as_posix(), ref, dest, FetchOptions(protocol="file"))
             assert (dest / "app.py").read_text() == "print('one')\n"
             assert not (dest / ".git").exists()
 
     def test_missing_ref_is_reported_cleanly(self, repo: tuple[Path, str], tmp_path: Path) -> None:
         source, _ = repo
         with pytest.raises(UnsafeSourceError, match="could not fetch"):
-            fetch_ref(source.as_posix(), "no-such-branch", tmp_path / "dest", protocol="file")
+            fetch_ref(
+                source.as_posix(),
+                "no-such-branch",
+                tmp_path / "dest",
+                FetchOptions(protocol="file"),
+            )
         assert not (tmp_path / "dest").exists()
 
     def test_https_only_policy_blocks_other_protocols(

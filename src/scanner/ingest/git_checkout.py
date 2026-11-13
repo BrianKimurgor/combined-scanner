@@ -7,6 +7,7 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -30,6 +31,12 @@ def _resolve(host: str) -> list[str]:
 
 def validate_git_url(url: str, resolver: Resolver | None = None) -> str:
     """Accept only public https repository URLs, to keep the server from being used for SSRF."""
+    _require_public_host(_https_hostname(url), resolver or _resolve)
+    return url
+
+
+def _https_hostname(url: str) -> str:
+    """Check the URL's shape (https, no credentials, default port) and return its host."""
     if len(url) > 2048 or any(c.isspace() or ord(c) < 32 for c in url):
         raise UnsafeSourceError("invalid repository URL")
     try:
@@ -43,7 +50,12 @@ def validate_git_url(url: str, resolver: Resolver | None = None) -> str:
         raise UnsafeSourceError("credentials in the repository URL are not allowed")
     if not parts.hostname or port not in _ALLOWED_PORTS:
         raise UnsafeSourceError("repository URL must use a hostname and the default https port")
-    addresses = (resolver or _resolve)(parts.hostname)
+    return parts.hostname
+
+
+def _require_public_host(hostname: str, resolver: Resolver) -> None:
+    """Every address the host resolves to must be public, or the fetch could reach internal ones."""
+    addresses = resolver(hostname)
     if not addresses:
         raise UnsafeSourceError("repository host could not be resolved")
     for address in addresses:
@@ -53,7 +65,6 @@ def validate_git_url(url: str, resolver: Resolver | None = None) -> str:
             raise UnsafeSourceError("repository host resolved to an invalid address") from exc
         if not parsed.is_global:
             raise UnsafeSourceError("repository host is not a public address")
-    return url
 
 
 def validate_ref(ref: str) -> str:
@@ -96,63 +107,64 @@ def check_tree_size(root: Path, limits: ExtractLimits) -> None:
                 raise UnsafeSourceError("repository is larger than the allowed size")
 
 
-def fetch_ref(
-    url: str,
-    ref: str,
-    dest: Path,
-    *,
-    protocol: str = "https",
-    timeout: int = 300,
-    limits: ExtractLimits | None = None,
-    runner: Runner = _run,
-) -> None:
+@dataclass(frozen=True)
+class FetchOptions:
+    """How fetch_ref runs git."""
+
+    protocol: str = "https"  # the only one allowed; tests fetch local repositories with "file"
+    timeout: int = 300
+    limits: ExtractLimits = field(default_factory=ExtractLimits)
+    runner: Runner = _run  # replaced in tests to record or fake the git calls
+
+
+def _git_env(home: str, protocol: str) -> dict[str, str]:
+    """A minimal environment: no user or system config, no prompts, one protocol."""
+    return {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": home,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_ALLOW_PROTOCOL": protocol,
+        "LC_ALL": "C",
+    }
+
+
+def _git_steps(dest: Path, protocol: str, url: str, ref: str) -> tuple[int, list[list[str]]]:
+    """The git commands that fetch one ref, and how many leading arguments they share."""
+    git = [
+        "git",
+        "-c", "protocol.allow=never",
+        "-c", f"protocol.{protocol}.allow=always",
+        "-c", "http.followRedirects=false",
+        "-c", f"core.hooksPath={os.devnull}",
+        "-c", "core.symlinks=false",  # repository symlinks become plain files
+        "-c", "core.fsmonitor=false",
+        "-C", str(dest),
+    ]  # fmt: skip
+    fetch = ["fetch", "--quiet", "--depth", "1", "--no-tags", "--no-recurse-submodules"]
+    return len(git), [
+        git + ["init", "--quiet", "--template="],
+        git + [*fetch, "--", url, ref],
+        git + ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+    ]
+
+
+def fetch_ref(url: str, ref: str, dest: Path, options: FetchOptions | None = None) -> None:
     """Fetch one ref shallowly into dest and drop .git; url and ref must already be validated."""
-    limits = limits or ExtractLimits()
+    opts = options or FetchOptions()
     if dest.exists() and any(dest.iterdir()):
         raise FileExistsError(f"destination is not empty: {dest}")
     dest.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="git-home-") as home:
-        env = {
-            "PATH": os.environ.get("PATH", ""),
-            "HOME": home,
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_ALLOW_PROTOCOL": protocol,
-            "LC_ALL": "C",
-        }
-        git = [
-            "git",
-            "-c", "protocol.allow=never",
-            "-c", f"protocol.{protocol}.allow=always",
-            "-c", "http.followRedirects=false",
-            "-c", f"core.hooksPath={os.devnull}",
-            "-c", "core.symlinks=false",  # repository symlinks become plain files
-            "-c", "core.fsmonitor=false",
-            "-C", str(dest),
-        ]  # fmt: skip
-        steps = [
-            git + ["init", "--quiet", "--template="],
-            git
-            + [
-                "fetch",
-                "--quiet",
-                "--depth",
-                "1",
-                "--no-tags",
-                "--no-recurse-submodules",
-                "--",
-                url,
-                ref,
-            ],
-            git + ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
-        ]
+        env = _git_env(home, opts.protocol)
+        shared, steps = _git_steps(dest, opts.protocol, url, ref)
         try:
             for step in steps:
-                done = runner(step, env, timeout)
+                done = opts.runner(step, env, opts.timeout)
                 if done.returncode != 0:
                     raise UnsafeSourceError(
-                        f"git {step[len(git)]} failed: could not fetch the repository or ref"
+                        f"git {step[shared]} failed: could not fetch the repository or ref"
                     )
         except subprocess.TimeoutExpired as exc:
             remove_tree(dest, ignore_errors=True)
@@ -166,7 +178,7 @@ def fetch_ref(
         remove_tree(dest, ignore_errors=True)
         raise UnsafeSourceError("could not clean up the fetched repository") from exc
     try:
-        check_tree_size(dest, limits)
+        check_tree_size(dest, opts.limits)
     except UnsafeSourceError:
         remove_tree(dest, ignore_errors=True)
         raise
@@ -175,4 +187,5 @@ def fetch_ref(
 def git_checkout(
     url: str, ref: str, dest: Path, *, timeout: int = 300, limits: ExtractLimits | None = None
 ) -> None:
-    fetch_ref(validate_git_url(url), validate_ref(ref), dest, timeout=timeout, limits=limits)
+    options = FetchOptions(timeout=timeout, limits=limits or ExtractLimits())
+    fetch_ref(validate_git_url(url), validate_ref(ref), dest, options)

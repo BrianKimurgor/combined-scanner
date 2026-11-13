@@ -24,7 +24,12 @@ from scanner.report import markdown as markdown_report
 from scanner.report import sarif as sarif_report
 from scanner.retention import prune
 from scanner.settings import Settings
-from scanner.worker.sandbox import SandboxError, prepare_out_dir, run_in_sandbox
+from scanner.worker.sandbox import (
+    ProgressWatch,
+    SandboxError,
+    prepare_out_dir,
+    run_in_sandbox,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +83,8 @@ def _scan_source(
     tools = Config().scanners.enabled
     save_progress = _progress_saver(factory, scan.id)
     save_progress(waiting(tools, passes=2 if base_root else 1))
-    result = run_in_sandbox(
-        settings, scan.id, root, out, base_root, expected_tools=tools, on_progress=save_progress
-    )
+    watch = ProgressWatch(tools, save_progress)
+    result = run_in_sandbox(settings, scan.id, root, out, base_root, watch)
     if result.timed_out:
         raise SandboxError("the scan exceeded the time limit")
     if result.exit_code not in COMPLETED_EXIT_CODES:

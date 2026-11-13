@@ -1,0 +1,14 @@
+# Keeps the commit-pinned GitHub Actions current: Dependabot opens a pull request for each new
+# release and updates both the SHA and the version comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week before proposing a new release, so one that is compromised and pulled is skipped.
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

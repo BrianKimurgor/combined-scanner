@@ -1,5 +1,6 @@
 import shutil
 import tempfile
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, cast
@@ -9,13 +10,12 @@ import yaml
 from pydantic import ValidationError
 
 from scanner import __version__, server_cli
-from scanner.core.baseline import Baseline
 from scanner.core.baseline import from_report as baseline_from_report
 from scanner.core.baseline import load as load_baseline
 from scanner.core.baseline import save as save_baseline
 from scanner.core.config import Config, FailLevel, load_config
-from scanner.core.diff_scan import run_diff_scan
-from scanner.core.orchestrator import run_scan
+from scanner.core.diff_scan import Revision, run_diff_scan
+from scanner.core.orchestrator import ScanOptions, run_scan
 from scanner.core.progress import ProgressTracker, write_progress
 from scanner.core.result import ScanReport, exit_code
 from scanner.ingest.errors import UnsafeSourceError
@@ -63,50 +63,85 @@ def stage(source: Path, dest: Path) -> Path:
     return dest
 
 
-def _run(
-    path: Path,
-    cfg: Config,
-    plugins: list[ScannerPlugin],
-    base: str | None,
-    head: str,
-    base_path: Path | None,
-    baseline: Baseline | None = None,
-    progress_file: Path | None = None,
-) -> ScanReport:
-    diff = base is not None or base_path is not None
-    progress = (
-        ProgressTracker(
-            [p.name for p in plugins],
-            lambda state: write_progress(progress_file, state),
-            passes=2 if diff else 1,
-        )
-        if progress_file is not None
-        else None
+@dataclass(frozen=True)
+class Target:
+    """What to scan: one directory, or a comparison of two revisions."""
+
+    path: Path
+    base: str | None = None  # git ref to compare against
+    head: str = "HEAD"
+    base_path: Path | None = None  # directory to compare against
+
+    @property
+    def is_diff(self) -> bool:
+        return self.base is not None or self.base_path is not None
+
+
+def _progress(
+    plugins: list[ScannerPlugin], target: Target, file: Path | None
+) -> ProgressTracker | None:
+    if file is None:
+        return None
+    names = [p.name for p in plugins]
+    return ProgressTracker(
+        names, lambda state: write_progress(file, state), passes=2 if target.is_diff else 1
     )
+
+
+def _run(
+    target: Target, cfg: Config, plugins: list[ScannerPlugin], options: ScanOptions
+) -> ScanReport:
     with tempfile.TemporaryDirectory(prefix="scanner-") as tmp:
         work = Path(tmp)
-        if base is None and base_path is None:
-            return run_scan(path, cfg, plugins, work / "out", baseline=baseline, progress=progress)
-        if base_path is not None:
-            return run_diff_scan(
-                base_path, path, cfg, plugins, work / "out",
-                base_label=str(base_path), head_label=str(path), baseline=baseline,
-                progress=progress,
-            )  # fmt: skip
-        assert base is not None  # noqa: S101 - narrowed above, for the type checker
-        top = git_toplevel(path)
-        relative = path.relative_to(top)
-        base_sha, head_sha = resolve_commit(top, base), resolve_commit(top, head)
-        export_commit(top, base_sha, work / "base")
-        export_commit(top, head_sha, work / "head")
-        roots = (work / "base" / relative, work / "head" / relative)
-        for root in roots:
-            root.mkdir(parents=True, exist_ok=True)  # the folder may not exist on one side
-        return run_diff_scan(
-            roots[0], roots[1], cfg, plugins, work / "out",
-            base_label=f"{base} ({base_sha[:8]})", head_label=f"{head} ({head_sha[:8]})",
-            baseline=baseline, progress=progress,
-        )  # fmt: skip
+        if target.base_path is not None:
+            base_rev = Revision(target.base_path, str(target.base_path))
+            head_rev = Revision(target.path, str(target.path))
+            return run_diff_scan(base_rev, head_rev, cfg, plugins, work / "out", options)
+        if target.base is None:
+            return run_scan(target.path, cfg, plugins, work / "out", options)
+        base_rev, head_rev = _export_revisions(target, target.base, work)
+        return run_diff_scan(base_rev, head_rev, cfg, plugins, work / "out", options)
+
+
+def _export_revisions(target: Target, base: str, work: Path) -> tuple[Revision, Revision]:
+    """Check out both git revisions of the target's folder side by side."""
+    top = git_toplevel(target.path)
+    relative = target.path.relative_to(top)
+    base_sha, head_sha = resolve_commit(top, base), resolve_commit(top, target.head)
+    export_commit(top, base_sha, work / "base")
+    export_commit(top, head_sha, work / "head")
+    roots = (work / "base" / relative, work / "head" / relative)
+    for root in roots:
+        root.mkdir(parents=True, exist_ok=True)  # the folder may not exist on one side
+    return (
+        Revision(roots[0], f"{base} ({base_sha[:8]})"),
+        Revision(roots[1], f"{target.head} ({head_sha[:8]})"),
+    )
+
+
+def _scan_config(
+    config: Path | None, fail_on: Severity | None, offline: bool, semgrep_rules: list[str] | None
+) -> Config:
+    cfg = load_config(config)
+    if fail_on is not None:
+        level = cast(FailLevel, fail_on.value)
+        cfg.gate.fail_on.vulnerability = level
+        cfg.gate.fail_on.code = level
+        cfg.gate.fail_on.iac = level
+    if offline:
+        cfg.offline = True
+    if semgrep_rules:
+        cfg.scanners.semgrep_rules = semgrep_rules
+    return cfg
+
+
+def _relabel(report: ScanReport, target: Target) -> ScanReport:
+    """Name the original folders in the report, not the staging copies that were scanned."""
+    update: dict[str, object] = {"target": str(target.path)}
+    if report.diff is not None:
+        base = str(target.base_path) if target.base_path else report.diff.base
+        update["diff"] = report.diff.model_copy(update={"head": str(target.path), "base": base})
+    return report.model_copy(update=update)
 
 
 @app.callback()
@@ -248,7 +283,6 @@ def scan(
 ) -> None:
     """Scan a directory and print a merged, deduplicated report.
 
-
     With --base REF (a git repository) or --base-path DIR, scan both revisions and report
     only the findings the change introduced. With --baseline FILE (see `scanner baseline`),
     findings already recorded there are treated as accepted. Exit codes: 0 pass, 1 quality
@@ -258,42 +292,36 @@ def scan(
         typer.echo("Use either --base or --base-path, not both.", err=True)
         raise typer.Exit(CONFIG_ERROR)
     try:
-        cfg = load_config(config)
+        cfg = _scan_config(config, fail_on, offline, semgrep_rules)
         baseline = load_baseline(baseline_file) if baseline_file else None
-        if fail_on is not None:
-            level = cast(FailLevel, fail_on.value)
-            cfg.gate.fail_on.vulnerability = level
-            cfg.gate.fail_on.code = level
-            cfg.gate.fail_on.iac = level
-        if offline:
-            cfg.offline = True
-        if semgrep_rules:
-            cfg.scanners.semgrep_rules = semgrep_rules
         plugins = build_plugins(cfg.scanners.enabled)
     except (OSError, ValueError, yaml.YAMLError, ValidationError) as exc:
         typer.echo(f"Configuration error: {exc}", err=True)
         raise typer.Exit(CONFIG_ERROR) from exc
 
-    scan_path, scan_base = path, base_path
-    if stage_dir is not None:
-        scan_path = stage(path, stage_dir / "head")
-        scan_base = stage(base_path, stage_dir / "base") if base_path is not None else None
+    target = Target(path, base, head, base_path)
+    scanned = _staged(target, stage_dir) if stage_dir is not None else target
+    options = ScanOptions(baseline, _progress(plugins, target, progress_file))
     try:
-        report = _run(scan_path, cfg, plugins, base, head, scan_base, baseline, progress_file)
+        report = _run(scanned, cfg, plugins, options)
     except UnsafeSourceError as exc:
         typer.echo(f"Cannot compare revisions: {exc}", err=True)
         raise typer.Exit(CONFIG_ERROR) from exc
+    if scanned.path != path:  # keep the staging directory out of the report
+        report = _relabel(report, target)
+    _emit(_RENDERERS[fmt](report), output)
+    raise typer.Exit(exit_code(report))
 
-    if scan_path != path:  # keep the staging directory out of the report
-        update: dict[str, object] = {"target": str(path)}
-        if report.diff is not None:
-            labels = {"head": str(path), "base": str(base_path) if base_path else report.diff.base}
-            update["diff"] = report.diff.model_copy(update=labels)
-        report = report.model_copy(update=update)
 
-    rendered = _RENDERERS[fmt](report)
+def _staged(target: Target, stage_dir: Path) -> Target:
+    """The same target, copied onto local disk first (see `stage`)."""
+    base_path = target.base_path
+    staged_base = stage(base_path, stage_dir / "base") if base_path is not None else None
+    return Target(stage(target.path, stage_dir / "head"), target.base, target.head, staged_base)
+
+
+def _emit(rendered: str, output: Path | None) -> None:
     if output is None:
         typer.echo(rendered, nl=False)
     else:
         output.write_text(rendered, encoding="utf-8")
-    raise typer.Exit(exit_code(report))

@@ -57,8 +57,18 @@ def _diff_lines(report: ScanReport) -> list[str]:
 
 
 def render(report: ScanReport) -> str:
+    shown = report.new_findings()  # in diff mode only the findings this change introduced
+    lines = _header(report)
+    lines += _warnings(report)
+    lines += _scanners(report)
+    lines += _summary(report, shown)
+    lines += _findings(report, shown)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _header(report: ScanReport) -> list[str]:
     verdict = "PASSED" if report.gate.passed else "FAILED"
-    lines = [
+    return [
         "# Code Scan Report",
         "",
         f"- Target: {code_span(report.target)}",
@@ -68,6 +78,10 @@ def render(report: ScanReport) -> str:
         *_diff_lines(report),
         "",
     ]
+
+
+def _warnings(report: ScanReport) -> list[str]:
+    lines: list[str] = []
     if not report.any_scanner_ran():
         lines += [
             "> **Warning:** no scanner ran successfully, so this result is not meaningful.",
@@ -77,27 +91,38 @@ def render(report: ScanReport) -> str:
         lines += ["## Gate failures", "", *[f"- {reason}" for reason in report.gate.reasons], ""]
     if report.notices:
         lines += ["## Notices", "", *[f"- {escape_text(n)}" for n in report.notices], ""]
+    return lines
 
-    lines += ["## Scanners", ""]
-    lines += _table(
-        ["Tool", "Status", "Findings", "Duration", "Details"],
-        [
-            [t.tool, t.status.value, t.finding_count, f"{t.duration_seconds:.1f}s", t.message]
-            for t in report.tools
-        ],
-    )
 
-    shown = report.new_findings()  # in diff mode only the findings this change introduced
+def _scanners(report: ScanReport) -> list[str]:
+    return [
+        "## Scanners",
+        "",
+        *_table(
+            ["Tool", "Status", "Findings", "Duration", "Details"],
+            [
+                [t.tool, t.status.value, t.finding_count, f"{t.duration_seconds:.1f}s", t.message]
+                for t in report.tools
+            ],
+        ),
+    ]
+
+
+def _summary(report: ScanReport, shown: list[Finding]) -> list[str]:
     by_severity = Counter(f.severity.value for f in shown)
-    lines += ["", "## Summary", ""]
+    lines = ["", "## Summary", ""]
     lines += _table(
         ["Severity", "Count"],
         [[s.value, by_severity.get(s.value, 0)] for s in Severity],
     )
     for key, value in report.metrics.items():
         lines.append(f"\n- {key}: {value:g}")
+    return lines
 
-    lines += ["", "## New findings" if (report.diff or report.baseline) else "## Findings", ""]
+
+def _findings(report: ScanReport, shown: list[Finding]) -> list[str]:
+    """One table per category."""
+    lines = ["", "## New findings" if (report.diff or report.baseline) else "## Findings", ""]
     if not shown:
         lines.append("No new findings." if (report.diff or report.baseline) else "No findings.")
     for category in sorted({f.category for f in shown}):
@@ -118,4 +143,4 @@ def render(report: ScanReport) -> str:
             ],
         )
         lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+    return lines

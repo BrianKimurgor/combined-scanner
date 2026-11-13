@@ -6,7 +6,7 @@ from fakes import DuplicationPlugin, FlakyPlugin, VulnGrepPlugin
 from scanner.core import diff as diff_module
 from scanner.core.config import Config
 from scanner.core.diff import changed_files, finding_keys, tag_new
-from scanner.core.diff_scan import run_diff_scan
+from scanner.core.diff_scan import Revision, run_diff_scan
 from scanner.core.result import ScanReport, exit_code
 from scanner.normalize.finding import Category, Finding, Severity
 from scanner.plugins.base import ScannerPlugin, Status
@@ -28,13 +28,11 @@ def _diff(
     config: Config | None = None,
 ) -> ScanReport:
     return run_diff_scan(
-        _tree(tmp_path / "base", base),
-        _tree(tmp_path / "head", head),
+        Revision(_tree(tmp_path / "base", base), "main"),
+        Revision(_tree(tmp_path / "head", head), "feature"),
         config or Config(),
         plugins or [VulnGrepPlugin()],
         tmp_path / "out",
-        base_label="main",
-        head_label="feature",
     )
 
 

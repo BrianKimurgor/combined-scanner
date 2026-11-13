@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass, field
 
 from scanner.core.ignore import is_ignored
 from scanner.normalize import severity
@@ -23,6 +24,15 @@ _MIN_COLUMNS = 11
 # Minified or generated files give lizard enormous "function" names; the csv default is 128 KiB.
 csv.field_size_limit(2**30)
 BATCH_FILES = 500  # keeps the command line short and bounds the work of one retry
+
+
+@dataclass
+class _Batch:
+    """What a per-file retry has gathered so far, and when it must stop."""
+
+    deadline: float
+    outputs: list[str] = field(default_factory=list)  # csv from runs that worked
+    skipped: list[str] = field(default_factory=list)  # files lizard cannot parse
 
 
 class LizardPlugin(ScannerPlugin):
@@ -49,13 +59,13 @@ class LizardPlugin(ScannerPlugin):
         started = time.monotonic()
         deadline = started + ctx.timeout
         files = self._source_files(ctx)
-        outputs: list[str] = []
-        skipped: list[str] = []
+        batch = _Batch(deadline)
         for start in range(0, len(files), BATCH_FILES):
-            self._collect(exe, ctx, files[start : start + BATCH_FILES], outputs, skipped, deadline)
-        if time.monotonic() > deadline or (not outputs and skipped):
+            self._collect(exe, ctx, files[start : start + BATCH_FILES], batch)
+        if time.monotonic() > deadline or (not batch.outputs and batch.skipped):
             return failed
-        parsed = self.parse(ctx, CommandResult(0, "\n".join(outputs), ""))
+        parsed = self.parse(ctx, CommandResult(0, "\n".join(batch.outputs), ""))
+        skipped = batch.skipped
         note = f"{len(skipped)} file(s) skipped because lizard could not parse them"
         return PluginResult(
             tool=self.name,
@@ -84,19 +94,11 @@ class LizardPlugin(ScannerPlugin):
             ]
         return found
 
-    def _collect(
-        self,
-        exe: str,
-        ctx: ScanContext,
-        files: list[str],
-        outputs: list[str],
-        skipped: list[str],
-        deadline: float,
-    ) -> None:
+    def _collect(self, exe: str, ctx: ScanContext, files: list[str], batch: "_Batch") -> None:
         """Run lizard on files; when it fails, split the list to find the files that crash it."""
-        if not files or time.monotonic() > deadline:
+        if not files or time.monotonic() > batch.deadline:
             return
-        remaining = max(1, int(deadline - time.monotonic()))
+        remaining = max(1, int(batch.deadline - time.monotonic()))
         try:
             done = subprocess.run(  # noqa: S603 - fixed argv, no shell
                 [exe, "--csv", *files],
@@ -112,13 +114,13 @@ class LizardPlugin(ScannerPlugin):
         except (subprocess.TimeoutExpired, OSError):
             return
         if done.returncode == 0:
-            outputs.append(done.stdout)
+            batch.outputs.append(done.stdout)
         elif len(files) == 1:
-            skipped.append(files[0])
+            batch.skipped.append(files[0])
         else:
             middle = len(files) // 2
-            self._collect(exe, ctx, files[:middle], outputs, skipped, deadline)
-            self._collect(exe, ctx, files[middle:], outputs, skipped, deadline)
+            self._collect(exe, ctx, files[:middle], batch)
+            self._collect(exe, ctx, files[middle:], batch)
 
     def parse(self, ctx: ScanContext, proc: CommandResult) -> Parsed:
         limits = ctx.config.gate.complexity

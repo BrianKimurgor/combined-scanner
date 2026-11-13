@@ -102,16 +102,23 @@ def collect(
     )
 
 
+@dataclass(frozen=True)
+class ScanOptions:
+    """Optional extras for one scan."""
+
+    baseline: Baseline | None = None  # findings recorded here are accepted
+    progress: ProgressTracker | None = None  # told when each scanner starts and finishes
+
+
 def run_scan(
     target: Path,
     config: Config,
     plugins: Sequence[ScannerPlugin],
     output_dir: Path,
-    *,
-    baseline: Baseline | None = None,
-    progress: ProgressTracker | None = None,
+    options: ScanOptions | None = None,
 ) -> ScanReport:
-    scan = collect(target, config, plugins, output_dir, progress=progress)
+    opts = options or ScanOptions()
+    scan = collect(target, config, plugins, output_dir, progress=opts.progress)
     report = ScanReport(
         target=str(scan.root),
         started_at=scan.started_at,
@@ -122,4 +129,4 @@ def run_scan(
         gate=GateResult(passed=True),  # replaced by apply_policy
         score=compute_score(scan.findings, scan.tools),
     )
-    return apply_policy(report, config, suppressions=config.suppressions, baseline=baseline)
+    return apply_policy(report, config, suppressions=config.suppressions, baseline=opts.baseline)

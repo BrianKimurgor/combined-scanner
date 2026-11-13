@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scanner.core.config import Config
-from scanner.core.diff_scan import run_diff_scan
-from scanner.core.orchestrator import run_scan
+from scanner.core.diff_scan import Revision, run_diff_scan
+from scanner.core.orchestrator import ScanOptions, run_scan
 from scanner.core.progress import ProgressTracker, ScanProgress, read_progress
 from scanner.core.result import exit_code
 from scanner.mirror import OSV_DIR
@@ -47,10 +47,28 @@ def docker_command(
         raise SandboxError("scan paths must not contain commas")
     if mirror and not settings.mirror_dir.is_dir():
         raise SandboxError("offline mode needs a database mirror (scanner admin mirror-update)")
+    command = _locked_down_run(settings, scan_id, offline=mirror is not None)
+    if mirror:
+        command += _mirror_mounts(settings, mirror)
+    command += _cache_mount(settings)
+    command += [
+        "--mount", f"type=bind,source={source},target=/scan,readonly",
+        "--mount", f"type=bind,source={out},target=/out",
+    ]  # fmt: skip
+    if base:
+        command += ["--mount", f"type=bind,source={base},target=/base,readonly"]
+    return command + [
+        settings.sandbox_image,
+        *_scan_arguments(base is not None, mirror is not None),
+    ]
+
+
+def _locked_down_run(settings: Settings, scan_id: str, *, offline: bool) -> list[str]:
+    """docker run with no privileges, a read-only root, resource limits and private tmpfs."""
     memory = settings.sandbox_memory
     # Offline scans get no network at all, whatever SCANNER_SANDBOX_NETWORK says.
-    network = "none" if mirror else settings.sandbox_network
-    command = [
+    network = "none" if offline else settings.sandbox_network
+    return [
         "docker", "run", "--rm", "--name", f"scanner-{scan_id}",
         "--read-only",
         "--tmpfs", "/tmp:rw,nosuid,size=1g",  # noqa: S108 - tmpfs inside the container
@@ -64,45 +82,45 @@ def docker_command(
         "--ulimit", "nofile=4096:4096",
         "-e", "HOME=/tmp",  # noqa: S108
         "-e", "XDG_CACHE_HOME=/cache",
-        "-e", f"TRIVY_CACHE_DIR={'/mirror/trivy' if mirror else '/cache/trivy'}",
+        "-e", f"TRIVY_CACHE_DIR={'/mirror/trivy' if offline else '/cache/trivy'}",
         # The source is copied here first: bind mounts (Docker Desktop) read files very slowly.
         "--tmpfs", f"/work:rw,nosuid,size=2g,uid={SANDBOX_UID},gid={SANDBOX_UID}",
         "-e", "SCANNER_STAGE_DIR=/work",
     ]  # fmt: skip
-    if mirror:
-        # OSV-Scanner writes beside its database, so the read-only archives overlay a tmpfs.
-        command += ["-e", "OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/osv"]
-        command += ["--tmpfs", f"/osv:rw,nosuid,size=256m,uid={SANDBOX_UID},gid={SANDBOX_UID}"]
-        command += ["--mount", f"type=bind,source={mirror},target=/mirror,readonly"]
-        if (settings.mirror_dir / "osv" / OSV_DIR).is_dir():
-            archives = f"{mirror}/osv/{OSV_DIR}"
-            command += ["--mount", f"type=bind,source={archives},target=/osv/{OSV_DIR},readonly"]
+
+
+def _mirror_mounts(settings: Settings, mirror: str) -> list[str]:
+    """Offline scans read their vulnerability databases from a read-only mirror."""
+    # OSV-Scanner writes beside its database, so the read-only archives overlay a tmpfs.
+    args = ["-e", "OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/osv"]
+    args += ["--tmpfs", f"/osv:rw,nosuid,size=256m,uid={SANDBOX_UID},gid={SANDBOX_UID}"]
+    args += ["--mount", f"type=bind,source={mirror},target=/mirror,readonly"]
+    if (settings.mirror_dir / "osv" / OSV_DIR).is_dir():
+        archives = f"{mirror}/osv/{OSV_DIR}"
+        args += ["--mount", f"type=bind,source={archives},target=/osv/{OSV_DIR},readonly"]
+    return args
+
+
+def _cache_mount(settings: Settings) -> list[str]:
+    """Scanner caches go in a shared volume, or in a tmpfs when no volume is configured."""
     if settings.sandbox_cache_volume:
-        command += ["--mount", f"type=volume,source={settings.sandbox_cache_volume},target=/cache"]
-    else:
-        command += ["--tmpfs", f"/cache:rw,nosuid,size=2g,uid={SANDBOX_UID},gid={SANDBOX_UID}"]
-    command += [
-        "--mount", f"type=bind,source={source},target=/scan,readonly",
-        "--mount", f"type=bind,source={out},target=/out",
+        return ["--mount", f"type=volume,source={settings.sandbox_cache_volume},target=/cache"]
+    return ["--tmpfs", f"/cache:rw,nosuid,size=2g,uid={SANDBOX_UID},gid={SANDBOX_UID}"]
+
+
+def _scan_arguments(diff: bool, offline: bool) -> list[str]:
+    """The `scanner scan` command line run inside the container."""
+    args = [
+        "scan", "/scan",
+        "--format", "json",
+        "--output", "/out/report.json",
+        "--progress", f"/out/{PROGRESS_FILE}",
     ]  # fmt: skip
-    if base:
-        command += ["--mount", f"type=bind,source={base},target=/base,readonly"]
-    command += [
-        settings.sandbox_image,
-        "scan",
-        "/scan",
-        "--format",
-        "json",
-        "--output",
-        "/out/report.json",
-        "--progress",
-        f"/out/{PROGRESS_FILE}",
-    ]
-    if base:
-        command += ["--base-path", "/base"]
-    if mirror:
-        command += ["--offline", "--semgrep-rules", "/mirror/semgrep-rules"]
-    return command
+    if diff:
+        args += ["--base-path", "/base"]
+    if offline:
+        args += ["--offline", "--semgrep-rules", "/mirror/semgrep-rules"]
+    return args
 
 
 def _run_local(
@@ -116,15 +134,24 @@ def _run_local(
         if on_progress is not None
         else None
     )
+    options = ScanOptions(progress=progress)
     if base_dir is None:
-        report = run_scan(source_dir, config, plugins, out_dir / "tool-output", progress=progress)
+        report = run_scan(source_dir, config, plugins, out_dir / "tool-output", options)
     else:
         report = run_diff_scan(
-            base_dir, source_dir, config, plugins, out_dir / "tool-output",
-            base_label=str(base_dir), head_label=str(source_dir), progress=progress,
+            Revision(base_dir, str(base_dir)), Revision(source_dir, str(source_dir)),
+            config, plugins, out_dir / "tool-output", options,
         )  # fmt: skip
     (out_dir / "report.json").write_text(report.model_dump_json(), encoding="utf-8")
     return SandboxResult(exit_code(report), False, "")
+
+
+@dataclass(frozen=True)
+class ProgressWatch:
+    """Who to tell when per-scanner progress changes, and which scanners to expect."""
+
+    expected_tools: list[str]
+    on_progress: ProgressCallback
 
 
 def run_in_sandbox(
@@ -133,24 +160,22 @@ def run_in_sandbox(
     source_dir: Path,
     out_dir: Path,
     base_dir: Path | None = None,
-    *,
-    expected_tools: list[str] | None = None,
-    on_progress: ProgressCallback | None = None,
+    watch: ProgressWatch | None = None,
 ) -> SandboxResult:
     if settings.sandbox_mode == "local":
-        return _run_local(source_dir, out_dir, base_dir, on_progress)
+        return _run_local(source_dir, out_dir, base_dir, watch.on_progress if watch else None)
     command = docker_command(settings, scan_id, source_dir, out_dir, base_dir)
     progress_path = out_dir / PROGRESS_FILE
     last_seen: ScanProgress | None = None
 
     def report_progress() -> None:
         nonlocal last_seen
-        if on_progress is None:
+        if watch is None:
             return
-        progress = read_progress(progress_path, expected_tools or [])
+        progress = read_progress(progress_path, watch.expected_tools)
         if progress is not None and progress != last_seen:
             last_seen = progress
-            on_progress(progress)
+            watch.on_progress(progress)
 
     # stderr goes to a file, not a pipe: nobody reads a pipe while polling, so it could fill up.
     stderr_path = out_dir.parent / "sandbox-stderr.txt"
@@ -187,4 +212,5 @@ def prepare_out_dir(out_dir: Path) -> None:
     """The container runs as an unprivileged uid, so it must be able to write the report here."""
     out_dir.mkdir(parents=True, exist_ok=True)
     if os.name == "posix":
-        os.chmod(out_dir, 0o777)  # noqa: S103 - per-scan temp directory, deleted afterwards
+        # A per-scan temporary directory, deleted afterwards; the container's uid differs from ours.
+        os.chmod(out_dir, 0o777)  # noqa: S103  # nosemgrep

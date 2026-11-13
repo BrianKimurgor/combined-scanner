@@ -55,7 +55,7 @@ def _queue_zip(
         for name, text in entries:
             zf.writestr(name, text)
     with session_scope(factory) as session:
-        repo.create_scan(session, owner_id, "zip", "project.zip", None, scan_id)
+        repo.create_scan(session, owner_id, repo.NewScan("zip", "project.zip"), scan_id)
     return scan_id
 
 
@@ -93,8 +93,8 @@ def test_queue_is_fifo_and_each_scan_is_claimed_once(
     factory: sessionmaker[Session], owner_id: int
 ) -> None:
     with session_scope(factory) as session:
-        first = repo.create_scan(session, owner_id, "zip", "a.zip")
-        second = repo.create_scan(session, owner_id, "zip", "b.zip")
+        first = repo.create_scan(session, owner_id, repo.NewScan("zip", "a.zip"))
+        second = repo.create_scan(session, owner_id, repo.NewScan("zip", "b.zip"))
     with factory() as one, factory() as two:
         claimed_one = repo.claim_next_scan(one)
         claimed_two = repo.claim_next_scan(two)
@@ -106,9 +106,9 @@ def test_queue_is_fifo_and_each_scan_is_claimed_once(
 
 def test_stale_running_scans_are_failed(factory: sessionmaker[Session], owner_id: int) -> None:
     with session_scope(factory) as session:
-        scan = repo.create_scan(session, owner_id, "zip", "a.zip")
+        scan = repo.create_scan(session, owner_id, repo.NewScan("zip", "a.zip"))
         scan.status, scan.started_at = "running", utcnow() - timedelta(hours=3)
-        fresh = repo.create_scan(session, owner_id, "zip", "b.zip")
+        fresh = repo.create_scan(session, owner_id, repo.NewScan("zip", "b.zip"))
         fresh.status, fresh.started_at = "running", utcnow()
     with session_scope(factory) as session:
         assert repo.recover_stale(session, timedelta(hours=1)) == 1
@@ -158,7 +158,9 @@ def test_git_scan_to_a_private_host_is_refused(
     settings: Settings, factory: sessionmaker[Session], owner_id: int
 ) -> None:
     with session_scope(factory) as session:
-        scan = repo.create_scan(session, owner_id, "git", "https://127.0.0.1/a/b", "main")
+        scan = repo.create_scan(
+            session, owner_id, repo.NewScan("git", "https://127.0.0.1/a/b", "main")
+        )
     runner.process_next(settings, factory)
     failed = _scan(factory, scan.id)
     assert failed.status == "failed" and "public" in (failed.error or "")

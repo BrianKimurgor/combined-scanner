@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field, StringConstraints
 from scanner.core.progress import ScanProgress, ToolProgress
 from scanner.core.result import BaselineInfo, DiffInfo, GateResult, HealthScore, ToolStatus
 from scanner.db.models import Scan
-from scanner.db.repo import as_utc
-from scanner.normalize.finding import Finding
+from scanner.db.repo import FindingFilter, as_utc
+from scanner.normalize.finding import Category, Finding, Severity
 
 
 class GitScanRequest(BaseModel):
@@ -17,6 +17,27 @@ class GitScanRequest(BaseModel):
     # With base set, ref is the head: both revisions are scanned and only new findings gate.
     base: Annotated[str, StringConstraints(min_length=1, max_length=200)] | None = None
     baseline_id: int | None = None  # findings in this baseline are accepted
+
+
+class FindingQuery(BaseModel):
+    """Query parameters for listing a scan's findings."""
+
+    severity: Severity | None = None
+    category: Category | None = None
+    tool: str | None = None
+    new: bool | None = Field(default=None, description="Diff scans: only findings new in the head")
+    suppressed: bool | None = Field(default=None, description="Only suppressed, or only active")
+    limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+    def as_filter(self) -> FindingFilter:
+        return FindingFilter(
+            severity=self.severity.value if self.severity else None,
+            category=self.category.value if self.category else None,
+            tool=self.tool,
+            is_new=self.new,
+            suppressed=self.suppressed,
+        )
 
 
 class ScanCreated(BaseModel):

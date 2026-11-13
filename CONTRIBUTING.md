@@ -31,7 +31,18 @@ pytest
 ```
 
 The tests use recorded scanner output in `tests/fixtures/`, so they need neither Docker nor the
-scanners. If you change `docker/Dockerfile.worker`, also check that
+scanners.
+
+The project also scans itself and should pass its own quality gate. With the scanner image built,
+run it from the repository root:
+
+```bash
+docker run --rm -v "$PWD:/scan:ro" code-scanner-worker scan /scan --config /scan/scanner.yml -f md
+```
+
+When a finding is deliberate, fix it if you can. If you cannot, say why in the code and use the
+tool's own inline marker (`# nosemgrep`, `# trufflehog:ignore`), or add a suppression with a
+reason and a review date to `scanner.yml`. If you change `docker/Dockerfile.worker`, also check that
 `docker build -f docker/Dockerfile.worker -t code-scanner-worker .` still works.
 
 ## Adding a scanner

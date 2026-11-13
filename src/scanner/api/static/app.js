@@ -395,11 +395,8 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-async function newScanView(token) {
-  const baselines = await api("/baselines");
-  if (token !== renderToken) return;
-  const message = h("div");
-  let mode = "zip";
+// The zip picker: click to browse or drop a file; it shows the chosen file's name and size.
+function zipDropZone() {
   const file = h("input", { type: "file", accept: ".zip,application/zip", id: "file" });
   const dropTitle = h("span", { class: "big", text: "Drop a .zip here or click to browse" });
   const drop = h(
@@ -433,7 +430,15 @@ async function newScanView(token) {
       showFile();
     }
   });
+  return { drop, file };
+}
 
+async function newScanView(token) {
+  const baselines = await api("/baselines");
+  if (token !== renderToken) return;
+  const message = h("div");
+  let mode = "zip";
+  const { drop, file } = zipDropZone();
   const url = h("input", { type: "text", id: "url", placeholder: "https://github.com/owner/repo.git" });
   const ref = h("input", { type: "text", id: "ref", value: "HEAD" });
   const base = h("input", { type: "text", id: "base", placeholder: "main (optional)" });
@@ -505,7 +510,7 @@ async function newScanView(token) {
   show(
     shell(
       "new",
-      pageHead("New scan", "Runs eight scanners in a locked-down container and merges the results."),
+      pageHead("New scan", "Runs nine scanners in a locked-down container and merges the results."),
       h("div", { class: "panel form-narrow" }, form),
     ),
   );
@@ -839,56 +844,132 @@ function toolEntries(scan) {
   return entries;
 }
 
+const STATE_ICONS = { waiting: "clock", ok: "check", failed: "x", timeout: "x", skipped: "minus" };
+const STATE_LABELS = { waiting: "Waiting", running: "Running", ok: "Complete", failed: "Failed", timeout: "Timed out", skipped: "Skipped" };
+
+function hasValue(value) {
+  return value !== null && value !== undefined;
+}
+
+// A progress bar; set(percent) moves the fill and tells screen readers.
+function progressBar(label, extraClass = "") {
+  const fill = h("div", { class: "fill" });
+  const bar = h("div", { class: `pbar ${extraClass}`.trim(), role: "progressbar", "aria-label": label, "aria-valuemin": "0", "aria-valuemax": "100" }, fill);
+  function set(percent) {
+    fill.style.width = `${percent}%`;
+    bar.setAttribute("aria-valuenow", String(percent));
+  }
+  return { bar, set };
+}
+
+// Passes of a diff scan count separately: half done after the base revision.
+function toolPercent(entry, state) {
+  const passes = entry.passes || 1;
+  const done = Math.min(passes, entry.passes_done || 0);
+  return FINAL_STATES.has(state) ? 100 : Math.round((done / passes) * 100);
+}
+
+// The line under a scanner's bar: elapsed time while it runs, its results once it is done.
+function toolMetaText(entry, state, now) {
+  const passes = entry.passes || 1;
+  const done = Math.min(passes, entry.passes_done || 0);
+  if (state === "running") {
+    const elapsed = entry.started_at ? (now - new Date(entry.started_at)) / 1000 : 0;
+    const text = `${secondsText(elapsed)} elapsed`;
+    return passes > 1 ? `${text} · ${done ? "head" : "base"} revision (${done + 1} of ${passes})` : text;
+  }
+  if (!FINAL_STATES.has(state)) return "Queued to start";
+  const parts = [];
+  if (state === "ok" && hasValue(entry.finding_count)) {
+    parts.push(`${entry.finding_count} ${entry.finding_count === 1 ? "finding" : "findings"}`);
+  }
+  if (hasValue(entry.duration_seconds)) parts.push(`${entry.duration_seconds.toFixed(1)}s`);
+  return parts.join(" · ");
+}
+
 function toolCard(tool) {
   const [name, what] = TOOL_INFO[tool] || [tool, ""];
   const badge = h("div", { class: "tool-badge" });
   const status = h("span", { class: "tool-status" });
-  const fill = h("div", { class: "fill" });
-  const bar = h("div", { class: "pbar", role: "progressbar", "aria-label": `${name} progress`, "aria-valuemin": "0", "aria-valuemax": "100" }, fill);
+  const progress = progressBar(`${name} progress`);
   const meta = h("div", { class: "tool-meta" });
   const note = h("div", { class: "tool-note" });
   const card = h(
     "div",
     { class: "tool-card waiting" },
     h("div", { class: "tool-head" }, badge, h("div", { class: "tool-name" }, h("b", { text: name }), h("span", { text: what })), status),
-    bar,
+    progress.bar,
     meta,
     note,
   );
   let last = null;
   function update(entry, now) {
     const state = entry.state || "waiting";
-    const passes = entry.passes || 1;
-    const done = Math.min(passes, entry.passes_done || 0);
     if (state !== last) {
       card.className = `tool-card ${state}`;
-      const iconName = { waiting: "clock", ok: "check", failed: "x", timeout: "x", skipped: "minus" }[state];
-      badge.replaceChildren(state === "running" ? h("span", { class: "mini-spin" }) : icon(iconName || "clock", "sm"));
-      status.textContent = { waiting: "Waiting", running: "Running", ok: "Complete", failed: "Failed", timeout: "Timed out", skipped: "Skipped" }[state] || state;
+      badge.replaceChildren(state === "running" ? h("span", { class: "mini-spin" }) : icon(STATE_ICONS[state] || "clock", "sm"));
+      status.textContent = STATE_LABELS[state] || state;
       last = state;
     }
-    const percent = FINAL_STATES.has(state) ? 100 : Math.round((done / passes) * 100);
-    fill.style.width = `${percent}%`;
-    bar.setAttribute("aria-valuenow", String(percent));
-    let text = "";
-    if (state === "running") {
-      const elapsed = entry.started_at ? (now - new Date(entry.started_at)) / 1000 : 0;
-      text = `${secondsText(elapsed)} elapsed`;
-      if (passes > 1) text += ` · ${done ? "head" : "base"} revision (${done + 1} of ${passes})`;
-    } else if (FINAL_STATES.has(state)) {
-      const parts = [];
-      if (state === "ok" && entry.finding_count !== null && entry.finding_count !== undefined) {
-        parts.push(`${entry.finding_count} ${entry.finding_count === 1 ? "finding" : "findings"}`);
-      }
-      if (entry.duration_seconds !== null && entry.duration_seconds !== undefined) parts.push(`${entry.duration_seconds.toFixed(1)}s`);
-      text = parts.join(" · ");
-    } else {
-      text = "Queued to start";
-    }
-    meta.textContent = text;
+    progress.set(toolPercent(entry, state));
+    meta.textContent = toolMetaText(entry, state, now);
     note.textContent = state === "ok" ? "" : entry.message || "";
   }
   return { card, update };
+}
+
+// Share of all scanner passes that are finished.
+function overallPercent(scan, entries) {
+  if (scan.status === "done") return 100;
+  const total = entries.reduce((sum, e) => sum + (e.passes || 1), 0);
+  const doneUnits = entries.reduce((sum, e) => sum + (FINAL_STATES.has(e.state) ? e.passes || 1 : Math.min(e.passes || 1, e.passes_done || 0)), 0);
+  return total ? Math.round((doneUnits / total) * 100) : 0;
+}
+
+function scanElapsed(scan, now) {
+  if (!scan.started_at) return "";
+  const end = scan.finished_at ? new Date(scan.finished_at) : now;
+  return secondsText((end - new Date(scan.started_at)) / 1000);
+}
+
+// The page title and the line above the overall bar, for each scan state.
+function progressHeadline(scan, entries, now) {
+  const elapsed = scanElapsed(scan, now);
+  const finished = entries.filter((e) => FINAL_STATES.has(e.state)).length;
+  if (scan.status === "queued") return ["Waiting for a worker", "Queued. Start `scanner worker` if nothing picks this up."];
+  if (scan.status === "running") {
+    if (!entries.length) return ["Scanning", "Preparing the sandbox..."];
+    return ["Scanning", `${finished} of ${entries.length} scanners finished${elapsed ? ` · ${elapsed}` : ""}`];
+  }
+  if (scan.status === "done") return ["Scan complete", `${entries.length} scanners finished${elapsed ? ` in ${elapsed}` : ""}`];
+  return ["Scan failed", elapsed ? `Stopped after ${elapsed}` : "Stopped"];
+}
+
+// Placeholder cards until the first progress report arrives.
+function syncPlaceholders(grid, entries, active) {
+  if (!entries.length && active) {
+    if (!grid.querySelector(".ghost")) grid.replaceChildren(...Array.from({ length: 6 }, () => h("div", { class: "tool-card ghost" }, h("div", { class: "skeleton" }), h("div", { class: "skeleton short" }))));
+  } else if (entries.length) {
+    for (const ghost of grid.querySelectorAll(".ghost")) ghost.remove();
+  }
+}
+
+// Shown when every scanner is done: a green check, the outcome, and the way to the full report.
+function finishSummary(scan, entries, onView) {
+  const gate = scan.gate;
+  const failedTools = entries.filter((e) => e.state !== "ok").length;
+  return [
+    h("div", { class: "finish-check" }, icon("check")),
+    h("b", { text: "All scanners finished" }),
+    h(
+      "span",
+      { class: "muted" },
+      `${scan.counted_count ?? 0} ${scan.counted_count === 1 ? "finding counts" : "findings count"}`,
+      failedTools ? ` · ${failedTools} ${failedTools === 1 ? "scanner" : "scanners"} did not run cleanly` : "",
+    ),
+    gate ? h("span", { class: `pill ${gate.passed ? "passed" : "failed"}`, text: gate.passed ? "Quality gate passed" : "Quality gate failed" }) : null,
+    h("button", { class: "primary", onclick: onView }, h("span", { text: "View full report" }), icon("arrowRight", "sm")),
+  ];
 }
 
 // Watch every scanner live; when the scan ends, keep the cards and offer the full report.
@@ -896,8 +977,7 @@ function progressPage(token, scanId, first) {
   watched.add(scanId);
   const title = h("h1");
   const sub = h("div", { class: "sub", text: first.source || "" });
-  const overallFill = h("div", { class: "fill" });
-  const overallBar = h("div", { class: "pbar big", role: "progressbar", "aria-label": "Overall progress", "aria-valuemin": "0", "aria-valuemax": "100" }, overallFill);
+  const overall = progressBar("Overall progress", "big");
   const overallText = h("span", { class: "muted" });
   const overallPct = h("b");
   const grid = h("div", { class: "tool-grid" });
@@ -906,11 +986,15 @@ function progressPage(token, scanId, first) {
   const cards = new Map();
   let current = first;
 
+  function viewReport() {
+    watched.delete(scanId);
+    route();
+  }
+
   function draw() {
     const scan = current;
     const now = Date.now();
     const entries = toolEntries(scan);
-    const active = scan.status === "queued" || scan.status === "running";
     for (const entry of entries) {
       if (!cards.has(entry.tool)) {
         const made = toolCard(entry.tool);
@@ -919,69 +1003,18 @@ function progressPage(token, scanId, first) {
       }
       cards.get(entry.tool).update(entry, now);
     }
-
-    const total = entries.reduce((sum, e) => sum + (e.passes || 1), 0);
-    const doneUnits = entries.reduce((sum, e) => sum + (FINAL_STATES.has(e.state) ? e.passes || 1 : Math.min(e.passes || 1, e.passes_done || 0)), 0);
-    const finished = entries.filter((e) => FINAL_STATES.has(e.state)).length;
-    const percent = scan.status === "done" ? 100 : total ? Math.round((doneUnits / total) * 100) : 0;
-    overallFill.style.width = `${percent}%`;
-    overallBar.setAttribute("aria-valuenow", String(percent));
-    overallBar.classList.toggle("complete", scan.status === "done");
-    overallBar.classList.toggle("failed", scan.status === "failed");
+    const percent = overallPercent(scan, entries);
+    overall.set(percent);
+    overall.bar.classList.toggle("complete", scan.status === "done");
+    overall.bar.classList.toggle("failed", scan.status === "failed");
     overallPct.textContent = `${percent}%`;
-    const elapsed = scan.started_at ? secondsText(((scan.finished_at ? new Date(scan.finished_at) : now) - new Date(scan.started_at)) / 1000) : "";
-
-    if (scan.status === "queued") {
-      title.textContent = "Waiting for a worker";
-      overallText.textContent = "Queued. Start `scanner worker` if nothing picks this up.";
-    } else if (scan.status === "running") {
-      title.textContent = "Scanning";
-      overallText.textContent = entries.length
-        ? `${finished} of ${entries.length} scanners finished${elapsed ? ` · ${elapsed}` : ""}`
-        : "Preparing the sandbox...";
-    } else if (scan.status === "done") {
-      title.textContent = "Scan complete";
-      overallText.textContent = `${entries.length} scanners finished${elapsed ? ` in ${elapsed}` : ""}`;
-    } else {
-      title.textContent = "Scan failed";
-      overallText.textContent = elapsed ? `Stopped after ${elapsed}` : "Stopped";
-    }
-
-    if (!entries.length && active) {
-      if (!grid.querySelector(".ghost")) grid.replaceChildren(...Array.from({ length: 6 }, () => h("div", { class: "tool-card ghost" }, h("div", { class: "skeleton" }), h("div", { class: "skeleton short" }))));
-    } else if (entries.length) {
-      for (const ghost of grid.querySelectorAll(".ghost")) ghost.remove();
-    }
-
-    if (scan.status === "failed") {
-      notice.replaceChildren(errorBanner(scan.error || "unknown error"));
-    }
+    const [heading, line] = progressHeadline(scan, entries, now);
+    title.textContent = heading;
+    overallText.textContent = line;
+    syncPlaceholders(grid, entries, scan.status === "queued" || scan.status === "running");
+    if (scan.status === "failed") notice.replaceChildren(errorBanner(scan.error || "unknown error"));
     if (scan.status === "done" && finish.classList.contains("hidden")) {
-      const gate = scan.gate;
-      const failedTools = entries.filter((e) => e.state !== "ok").length;
-      finish.replaceChildren(
-        h("div", { class: "finish-check" }, icon("check")),
-        h("b", { text: "All scanners finished" }),
-        h(
-          "span",
-          { class: "muted" },
-          `${scan.counted_count ?? 0} ${scan.counted_count === 1 ? "finding counts" : "findings count"}`,
-          failedTools ? ` · ${failedTools} ${failedTools === 1 ? "scanner" : "scanners"} did not run cleanly` : "",
-        ),
-        gate ? h("span", { class: `pill ${gate.passed ? "passed" : "failed"}`, text: gate.passed ? "Quality gate passed" : "Quality gate failed" }) : null,
-        h(
-          "button",
-          {
-            class: "primary",
-            onclick: () => {
-              watched.delete(scanId);
-              route();
-            },
-          },
-          h("span", { text: "View full report" }),
-          icon("arrowRight", "sm"),
-        ),
-      );
+      finish.replaceChildren(...finishSummary(scan, entries, viewReport));
       finish.classList.remove("hidden");
     }
   }
@@ -990,7 +1023,7 @@ function progressPage(token, scanId, first) {
     shell(
       "history",
       h("div", { class: "page-head" }, h("div", {}, title, sub)),
-      h("div", { class: "panel overall" }, h("div", { class: "overall-head" }, overallText, overallPct), overallBar),
+      h("div", { class: "panel overall" }, h("div", { class: "overall-head" }, overallText, overallPct), overall.bar),
       notice,
       grid,
       finish,

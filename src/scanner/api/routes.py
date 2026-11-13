@@ -13,13 +13,19 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.datastructures import UploadFile
 
 from scanner.api.auth import OwnerDep, SessionDep
-from scanner.api.schemas import FindingsPage, GitScanRequest, ScanCreated, ScanStatus
+from scanner.api.schemas import (
+    FindingQuery,
+    FindingsPage,
+    GitScanRequest,
+    ScanCreated,
+    ScanStatus,
+)
 from scanner.db import repo
 from scanner.db.models import Scan, utcnow
 from scanner.db.session import session_scope
 from scanner.ingest.errors import UnsafeInputError
 from scanner.ingest.git_checkout import validate_git_url, validate_ref
-from scanner.normalize.finding import Category, Finding, Severity
+from scanner.normalize.finding import Finding
 from scanner.plugins import REGISTRY
 from scanner.settings import Settings
 
@@ -69,22 +75,13 @@ def _validate_git(body: GitScanRequest) -> None:
 
 
 def _enqueue(
-    factory: sessionmaker[Session],
-    owner_id: int,
-    scan_id: str,
-    source_type: str,
-    source_ref: str | None,
-    git_ref: str | None,
-    base_ref: str | None = None,
-    baseline_id: int | None = None,
+    factory: sessionmaker[Session], owner_id: int, scan_id: str, new: repo.NewScan
 ) -> None:
     with session_scope(factory) as session:
-        if baseline_id is not None and repo.get_baseline(session, owner_id, baseline_id) is None:
+        baseline = new.baseline_id
+        if baseline is not None and repo.get_baseline(session, owner_id, baseline) is None:
             raise HTTPException(400, "unknown baseline")
-        scan = repo.create_scan(
-            session, owner_id, source_type, source_ref, git_ref, scan_id, base_ref
-        )
-        scan.baseline_id = baseline_id
+        repo.create_scan(session, owner_id, new, scan_id)
 
 
 def _display_name(filename: str | None) -> str:
@@ -136,35 +133,20 @@ async def create_scan(request: Request, owner: OwnerDep) -> ScanCreated:
     await run_in_threadpool(_check_quota, factory, settings, owner.id)
     content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
     scan_id = uuid.uuid4().hex
-    git_ref: str | None = None
-    base_ref: str | None = None
-    baseline_id: int | None = None
     if content_type == "multipart/form-data":
         name, baseline_id = await _save_upload(request, settings, scan_id)
-        source_type, source_ref = "zip", name
+        new = repo.NewScan("zip", name, baseline_id=baseline_id)
     elif content_type == "application/json":
         try:
             body = GitScanRequest.model_validate(await request.json())
         except ValueError as exc:
             raise HTTPException(422, "body must be JSON with git_url and optional ref") from exc
         await run_in_threadpool(_validate_git, body)
-        source_type, source_ref, git_ref = "git", body.git_url, body.ref
-        base_ref = body.base
-        baseline_id = body.baseline_id
+        new = repo.NewScan("git", body.git_url, body.ref, body.base, body.baseline_id)
     else:
         raise HTTPException(415, "send a multipart zip upload or a JSON git request")
     try:
-        await run_in_threadpool(
-            _enqueue,
-            factory,
-            owner.id,
-            scan_id,
-            source_type,
-            source_ref,
-            git_ref,
-            base_ref,
-            baseline_id,
-        )
+        await run_in_threadpool(_enqueue, factory, owner.id, scan_id, new)
     except BaseException:
         (settings.uploads_dir / f"{scan_id}.zip").unlink(missing_ok=True)
         raise
@@ -188,36 +170,20 @@ def get_findings(
     scan_id: ScanId,
     owner: OwnerDep,
     session: SessionDep,
-    severity: Severity | None = None,
-    category: Category | None = None,
-    tool: str | None = None,
-    new: Annotated[
-        bool | None, Query(description="Diff scans: only findings new in the head")
-    ] = None,
-    suppressed: Annotated[bool | None, Query(description="Only suppressed, or only active")] = None,
-    limit: Annotated[int, Query(ge=1, le=500)] = 100,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    query: Annotated[FindingQuery, Query()],
 ) -> FindingsPage:
-    if tool is not None and tool not in REGISTRY:
+    if query.tool is not None and query.tool not in REGISTRY:
         raise HTTPException(422, f"unknown tool; expected one of {', '.join(sorted(REGISTRY))}")
     scan = _owned_scan(session, owner.id, scan_id)
     if scan.status != "done":
         raise HTTPException(409, f"scan is {scan.status}")
     total, rows = repo.list_findings(
-        session,
-        scan.id,
-        severity=severity.value if severity else None,
-        category=category.value if category else None,
-        tool=tool,
-        is_new=new,
-        suppressed=suppressed,
-        limit=limit,
-        offset=offset,
+        session, scan.id, query.as_filter(), limit=query.limit, offset=query.offset
     )
     return FindingsPage(
         total=total,
-        limit=limit,
-        offset=offset,
+        limit=query.limit,
+        offset=query.offset,
         items=[Finding.model_validate_json(r) for r in rows],
     )
 

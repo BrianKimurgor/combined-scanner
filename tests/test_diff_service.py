@@ -181,7 +181,9 @@ def test_init_db_adds_columns_missing_from_older_databases(tmp_path: Path) -> No
         key = repo.create_api_key(session, "old-db")
         owner = repo.authenticate(session, key)
         assert owner is not None
-        scan = repo.create_scan(session, owner.id, "git", URL, "feature", None, "main")
+        scan = repo.create_scan(
+            session, owner.id, repo.NewScan("git", URL, "feature", base_ref="main")
+        )
     with factory() as session:
         loaded = repo.get_scan(session, owner.id, scan.id)
         assert loaded is not None and loaded.base_ref == "main"

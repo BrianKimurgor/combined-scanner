@@ -1,5 +1,6 @@
 # Example: scan every pull request and report only what the change introduced.
 # Copy to .github/workflows/ in the repository you want to protect. Not run by this repository.
+# Actions are pinned to full commit SHAs (version in the comment) so a moved tag cannot change them.
 # Untested against a real GitHub runner; adjust the image build or install step to your setup.
 name: Code scan
 
@@ -15,13 +16,13 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0     # the base commit must be present to compare against
 
       - name: Build the scanner image
         run: |
-          git clone --depth 1 https://example.com/your-org/code-scanner.git /tmp/code-scanner
+          git clone --depth 1 https://github.com/BrianKimurgor/combined-scanner.git /tmp/code-scanner
           docker build -f /tmp/code-scanner/docker/Dockerfile.worker -t code-scanner /tmp/code-scanner
 
       - name: Scan the pull request
@@ -45,12 +46,12 @@ jobs:
           exit 0             # the gate result is applied in the last step, after reporting
 
       - name: Upload findings to code scanning
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: scan-out/report.sarif
 
       - name: Comment on the pull request
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
@@ -66,7 +67,7 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: code-scan-report
           path: scan-out/report.html
