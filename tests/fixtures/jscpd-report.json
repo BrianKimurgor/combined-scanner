@@ -1,0 +1,11 @@
+{
+  "statistics": { "total": { "lines": 200, "duplicatedLines": 30, "percentage": 15 } },
+  "duplicates": [
+    {
+      "format": "python",
+      "lines": 15,
+      "firstFile": { "name": "app/a.py", "start": 10, "end": 25 },
+      "secondFile": { "name": "app/b.py", "start": 40, "end": 55 }
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+# syntax=docker/dockerfile:1
+FROM node:22-bookworm-slim AS node
+
+FROM python:3.12-slim-bookworm
+
+# Scanner versions. Binary downloads are verified against pinned SHA-256 digests.
+ARG OSV_VERSION=2.7.0
+ARG OSV_SHA256=160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+ARG GITLEAKS_VERSION=8.30.1
+ARG GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+ARG TRUFFLEHOG_VERSION=3.99.8
+ARG TRUFFLEHOG_SHA256=7c3b02f160f28929a467e29e20fba98746e0729f6e37c3c25761e4f8789abe08
+ARG TRIVY_VERSION=0.76.0
+ARG TRIVY_SHA256=e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7
+ARG SEMGREP_VERSION=1.182.0
+ARG CHECKOV_VERSION=3.3.30
+ARG LIZARD_VERSION=1.24.3
+ARG JSCPD_VERSION=5.4.2
+ARG PRESIDIO_VERSION=2.2.366
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node is only needed to install jscpd (it ships a prebuilt binary).
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && npm install -g "jscpd@${JSCPD_VERSION}" \
+    && npm cache clean --force
+
+RUN curl -fsSL -o /usr/local/bin/osv-scanner \
+        "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64" \
+    && echo "${OSV_SHA256}  /usr/local/bin/osv-scanner" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/osv-scanner
+
+RUN curl -fsSL -o /tmp/gitleaks.tgz \
+        "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+    && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks \
+    && rm /tmp/gitleaks.tgz
+
+RUN curl -fsSL -o /tmp/trufflehog.tgz \
+        "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz" \
+    && echo "${TRUFFLEHOG_SHA256}  /tmp/trufflehog.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/trufflehog.tgz -C /usr/local/bin trufflehog \
+    && rm /tmp/trufflehog.tgz
+
+RUN curl -fsSL -o /tmp/trivy.tgz \
+        "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+    && echo "${TRIVY_SHA256}  /tmp/trivy.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/trivy.tgz -C /usr/local/bin trivy \
+    && rm /tmp/trivy.tgz
+
+# Separate venvs avoid dependency conflicts between the Python scanners.
+RUN python -m venv /opt/semgrep && /opt/semgrep/bin/pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" \
+    && python -m venv /opt/checkov && /opt/checkov/bin/pip install --no-cache-dir "checkov==${CHECKOV_VERSION}" \
+    && python -m venv /opt/lizard && /opt/lizard/bin/pip install --no-cache-dir "lizard==${LIZARD_VERSION}" \
+    && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep \
+    && ln -s /opt/checkov/bin/checkov /usr/local/bin/checkov \
+    && ln -s /opt/lizard/bin/lizard /usr/local/bin/lizard
+
+WORKDIR /app
+# Dependencies first, against an empty package, so code changes do not reinstall them.
+COPY pyproject.toml ./
+RUN mkdir -p src/scanner && touch src/scanner/__init__.py \
+    && pip install --no-cache-dir ".[pii]" "presidio-analyzer==${PRESIDIO_VERSION}"
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps .
+
+RUN useradd --system --create-home --uid 10001 scanner \
+    && mkdir /cache && chown scanner:scanner /cache
+USER scanner
+
+ENV SEMGREP_SEND_METRICS=off \
+    TRIVY_DISABLE_TELEMETRY=true \
+    PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["scanner"]

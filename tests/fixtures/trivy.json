@@ -1,0 +1,74 @@
+{
+  "Results": [
+    {
+      "Target": "package-lock.json",
+      "Class": "lang-pkgs",
+      "Type": "npm",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2020-8203",
+          "PkgName": "lodash",
+          "InstalledVersion": "4.17.15",
+          "FixedVersion": "4.17.19",
+          "Severity": "HIGH",
+          "Title": "nodejs-lodash: prototype pollution in zipObjectDeep"
+        }
+      ]
+    },
+    {
+      "Target": "Dockerfile",
+      "Class": "config",
+      "Type": "dockerfile",
+      "Misconfigurations": [
+        {
+          "ID": "DS002",
+          "Title": "Image user should not be 'root'",
+          "Message": "Specify at least 1 USER command in Dockerfile with non-root user as argument",
+          "Severity": "HIGH",
+          "Status": "FAIL",
+          "CauseMetadata": { "StartLine": 0, "EndLine": 0 }
+        },
+        {
+          "ID": "DS026",
+          "Title": "No HEALTHCHECK defined",
+          "Severity": "LOW",
+          "Status": "PASS"
+        }
+      ]
+    },
+    {
+      "Target": "config/settings.py",
+      "Class": "secret",
+      "Secrets": [
+        {
+          "RuleID": "aws-access-key-id",
+          "Title": "AWS Access Key ID",
+          "Severity": "CRITICAL",
+          "StartLine": 7,
+          "EndLine": 7,
+          "Match": "aws_key = AKIAFAKEFAKEFAKEFAKE"
+        }
+      ]
+    },
+    {
+      "Target": "OS Packages",
+      "Class": "license",
+      "Licenses": [
+        {
+          "Severity": "LOW",
+          "Category": "notice",
+          "PkgName": "lodash",
+          "FilePath": "package-lock.json",
+          "Name": "MIT"
+        },
+        {
+          "Severity": "HIGH",
+          "Category": "restricted",
+          "PkgName": "gpl-lib",
+          "FilePath": "package-lock.json",
+          "Name": "GPL-3.0-only"
+        }
+      ]
+    }
+  ]
+}

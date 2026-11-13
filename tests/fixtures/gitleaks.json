@@ -1,0 +1,12 @@
+[
+  {
+    "RuleID": "aws-access-token",
+    "Description": "AWS Access Key",
+    "StartLine": 7,
+    "EndLine": 7,
+    "File": "config/settings.py",
+    "Secret": "AKIAFAKEFAKEFAKEFAKE",
+    "Match": "aws_key = AKIAFAKEFAKEFAKEFAKE",
+    "Fingerprint": "config/settings.py:aws-access-token:7"
+  }
+]

@@ -1,0 +1,75 @@
+# Example: scan every pull request and report only what the change introduced.
+# Copy to .github/workflows/ in the repository you want to protect. Not run by this repository.
+# Untested against a real GitHub runner; adjust the image build or install step to your setup.
+name: Code scan
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write       # post the summary comment
+  security-events: write     # upload SARIF to code scanning
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # the base commit must be present to compare against
+
+      - name: Build the scanner image
+        run: |
+          git clone --depth 1 https://example.com/your-org/code-scanner.git /tmp/code-scanner
+          docker build -f /tmp/code-scanner/docker/Dockerfile.worker -t code-scanner /tmp/code-scanner
+
+      - name: Scan the pull request
+        id: scan
+        run: |
+          mkdir -p scan-out && chmod 777 scan-out
+          # Compare the PR's base commit with its head commit; only new findings can fail the gate.
+          set +e
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/repo" -v "$PWD/scan-out:/out" -w /repo \
+            code-scanner scan /repo \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --format json --output /out/report.json
+          code=$?
+          for format in sarif comment html; do
+            docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/scan-out:/out" \
+              code-scanner render /out/report.json --format "$format" --output "/out/report.$format"
+          done
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0             # the gate result is applied in the last step, after reporting
+
+      - name: Upload findings to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: scan-out/report.sarif
+
+      - name: Comment on the pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('scan-out/report.comment', 'utf8');
+            const marker = '<!-- code-scanner:pr-comment -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code-scan-report
+          path: scan-out/report.html
+
+      - name: Apply the quality gate
+        run: exit ${{ steps.scan.outputs.exit_code }}

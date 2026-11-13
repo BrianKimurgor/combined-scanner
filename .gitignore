@@ -1,0 +1,20 @@
+# Upstream scanner sources kept for reference only
+/reference/
+
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.env
+scan-output/
+
+# Server data: database, uploads and reports from local runs
+scanner-data/
