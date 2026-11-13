@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -39,5 +40,7 @@ def test_bad_server_settings_are_reported(env: dict[str, str]) -> None:
 
 
 def test_serve_help_lists_the_options() -> None:
-    result = runner.invoke(app, ["serve", "--help"])
-    assert result.exit_code == 0 and "--host" in result.output and "--port" in result.output
+    # CI runners ask for colour, and colour codes would split "--host" in the raw output.
+    result = runner.invoke(app, ["serve", "--help"], env={"NO_COLOR": "1", "FORCE_COLOR": ""})
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert result.exit_code == 0 and "--host" in plain and "--port" in plain
