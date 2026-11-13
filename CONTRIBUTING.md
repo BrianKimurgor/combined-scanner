@@ -31,19 +31,30 @@ pytest
 ```
 
 The tests use recorded scanner output in `tests/fixtures/`, so they need neither Docker nor the
-scanners.
+scanners. If you change `docker/Dockerfile.worker`, also check that
+`docker build -f docker/Dockerfile.worker -t code-scanner-worker .` still works.
 
-The project also scans itself and should pass its own quality gate. With the scanner image built,
-run it from the repository root:
+## Scanning this project with itself
+
+The project scans itself and should pass its own quality gate, with no configuration, the same
+way an upload to the web UI is scanned. With the scanner image built, run it from the repository
+root:
 
 ```bash
-docker run --rm -v "$PWD:/scan:ro" code-scanner-worker scan /scan --config /scan/scanner.yml -f md
+docker run --rm -v "$PWD:/scan:ro" code-scanner-worker scan /scan -f md
 ```
 
-When a finding is deliberate, fix it if you can. If you cannot, say why in the code and use the
-tool's own inline marker (`# nosemgrep`, `# trufflehog:ignore`), or add a suppression with a
-reason and a review date to `scanner.yml`. If you change `docker/Dockerfile.worker`, also check that
-`docker build -f docker/Dockerfile.worker -t code-scanner-worker .` still works.
+When a finding is deliberate, fix it if you can. If you cannot, put the reason in a comment and
+mark the line with the tool's inline marker, so the decision stays next to the code and applies
+to every scan:
+
+| Tool | Marker |
+| --- | --- |
+| Semgrep | `# nosemgrep` on the flagged line |
+| TruffleHog | `# trufflehog:ignore` on the flagged line |
+| Gitleaks | `# gitleaks:allow` on the flagged line |
+| Lizard | `# lizard forgives(parameter_count)` (or another metric) inside the function |
+| Presidio | `# pii:ignore` on the flagged line (this project's own marker) |
 
 ## Adding a scanner
 

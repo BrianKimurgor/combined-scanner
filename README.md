@@ -108,6 +108,22 @@ suppressions:
     expires: 2027-01-31          # at most a year ahead; it counts again after this date
 ```
 
+### Accepting a finding in the code
+
+A finding that is deliberate, such as test data or an intended pattern, can be marked where it
+is, with the reason in a comment beside it. The marker travels with the code, so it applies to
+every scan, including uploads to the web UI, which never read a project's own `scanner.yml`.
+
+| Tool | Marker |
+| --- | --- |
+| Semgrep | `# nosemgrep` on the flagged line |
+| Gitleaks | `# gitleaks:allow` on the flagged line |
+| TruffleHog | `# trufflehog:ignore` on the flagged line |
+| Lizard | `# lizard forgives(parameter_count)` (or another metric) inside the function |
+| Presidio | `# pii:ignore` on the flagged line (this scanner's own marker) |
+
+Addresses inside URLs, such as `ssh://git@github.com/...`, are not reported as email addresses.
+
 ## Run the server
 
 The server needs the scanner image built above. Run each long-running command in its own terminal:

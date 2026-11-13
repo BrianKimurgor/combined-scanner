@@ -288,6 +288,9 @@ def scan(
     findings already recorded there are treated as accepted. Exit codes: 0 pass, 1 quality
     gate failed, 2 scanner or configuration error.
     """
+    # Each Typer option is a parameter, so a command with many options has many parameters;
+    # the logic itself lives in the helpers above.
+    # lizard forgives(parameter_count)
     if base is not None and base_path is not None:
         typer.echo("Use either --base or --base-path, not both.", err=True)
         raise typer.Exit(CONFIG_ERROR)

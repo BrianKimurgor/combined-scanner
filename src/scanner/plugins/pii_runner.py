@@ -26,6 +26,10 @@ SKIPPED_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "composer.l
 # RFC 2606 names and common placeholders: addresses here cannot belong to a real person.
 PLACEHOLDER_DOMAINS = {"example.com", "example.org", "example.net", "localhost", "test.com"}
 PLACEHOLDER_SUFFIXES = (".example", ".test", ".invalid", ".localhost", ".local")
+# A line containing this is not reported, like gitleaks:allow; say why next to it.
+IGNORE_MARKER = "pii:ignore"
+# Characters that end the word an address sits in, when looking back from it.
+_WORD_BREAKS = " \t\n\"'`()<>[],;="
 # Issuer prefix and length of the main card networks. Luhn alone also accepts about one in ten
 # random digit strings, such as millisecond timestamps (1761800000000).
 _CARD = re.compile(
@@ -47,12 +51,25 @@ def _is_plausible_card(value: str) -> bool:
     return _CARD.fullmatch(re.sub(r"\D", "", value)) is not None
 
 
-def _is_false_positive(entity: str, value: str) -> bool:
+def _in_url(text: str, start: int) -> bool:
+    """user@host inside a URL (ssh://git@github.com, https://user:pw@host) is not an email."""
+    word_start = max(text.rfind(c, 0, start) for c in _WORD_BREAKS) + 1
+    return "://" in text[word_start:start]
+
+
+def _is_false_positive(entity: str, text: str, start: int, end: int) -> bool:
+    value = text[start:end]
     if entity == "EMAIL_ADDRESS":
-        return _is_placeholder_email(value)
+        return _is_placeholder_email(value) or _in_url(text, start)
     if entity == "CREDIT_CARD":
         return not _is_plausible_card(value)
     return False
+
+
+def _marked_lines(text: str) -> set[int]:
+    if IGNORE_MARKER not in text:
+        return set()
+    return {number for number, line in enumerate(text.split("\n"), 1) if IGNORE_MARKER in line}
 
 
 # Pattern-based recognizers only: they need no NLP model and are far less noisy on code than NER.
@@ -115,15 +132,17 @@ def scan(
         files_scanned += 1
         relative = path.relative_to(root).as_posix()
         newlines = [m.start() for m in re.finditer("\n", text)]
+        marked = _marked_lines(text)
         for recognizer in recognizers:
             entities = list(recognizer.supported_entities)
             for match in recognizer.analyze(text=text, entities=entities, nlp_artifacts=None):
                 if match.score < min_score:
                     continue
-                if _is_false_positive(match.entity_type, text[match.start : match.end]):
+                if _is_false_positive(match.entity_type, text, match.start, match.end):
                     continue
                 line = bisect.bisect_right(newlines, match.start) + 1
-                counts[(relative, line, match.entity_type)] += 1
+                if line not in marked:
+                    counts[(relative, line, match.entity_type)] += 1
     findings = [
         {"file": file, "line": line, "entity": entity, "count": count}
         for (file, line, entity), count in sorted(counts.items())

@@ -9,7 +9,7 @@ description = "Scan a codebase or PR diff with open-source scanners and merge re
 requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
-authors = [{ name = "BrianKimurgor", email = "kimurgorbrian20@gmail.com" }]
+authors = [{ name = "BrianKimurgor", email = "kimurgorbrian20@gmail.com" }]  # pii:ignore - public contact
 dependencies = [
     "typer>=0.12",
     "pydantic>=2.7",

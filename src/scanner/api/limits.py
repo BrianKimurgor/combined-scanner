@@ -2,6 +2,8 @@ import json
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from scanner.api.asgi import HttpMiddleware
+
 MIB = 1024 * 1024
 MULTIPART_OVERHEAD = MIB  # form boundaries and headers around the uploaded file
 
@@ -10,7 +12,7 @@ class _TooLarge(Exception):
     pass
 
 
-class SecurityHeadersMiddleware:
+class SecurityHeadersMiddleware(HttpMiddleware):
     HEADERS = (
         (b"x-content-type-options", b"nosniff"),
         (b"referrer-policy", b"no-referrer"),
@@ -20,13 +22,7 @@ class SecurityHeadersMiddleware:
     )
     DOC_PATHS = ("/docs", "/redoc", "/openapi.json")  # interactive docs need their own scripts
 
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
         skip_csp = scope["path"].startswith(self.DOC_PATHS)
 
         async def send_with_headers(message: Message) -> None:
@@ -45,17 +41,14 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
-class BodySizeLimitMiddleware:
+class BodySizeLimitMiddleware(HttpMiddleware):
     """Reject oversized request bodies, including chunked ones that send no Content-Length."""
 
     def __init__(self, app: ASGIApp, max_bytes: int) -> None:
-        self.app = app
+        super().__init__(app)
         self.max_bytes = max_bytes
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
         declared = dict(scope["headers"]).get(b"content-length", b"")
         if declared.isdigit() and int(declared) > self.max_bytes:
             await self._reject(send)

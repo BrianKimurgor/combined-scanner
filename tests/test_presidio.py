@@ -15,6 +15,10 @@ from scanner.plugins.base import CommandResult, ScanContext, Status
 from scanner.plugins.presidio import PresidioPlugin
 
 EMAIL = re.compile(r"[\w.]+@[\w.]+")
+# Sample addresses on a made-up domain; the marker keeps them out of this repository's own scan.
+BOB = "bob@acme.io"  # pii:ignore
+AMY = "amy@acme.io"  # pii:ignore
+REAL = "real@acme.io"  # pii:ignore
 
 
 class FakeEmailRecognizer:
@@ -42,7 +46,8 @@ def _scan(root: Path, ignore: list[str] | None = None, recognizer: Any = None) -
 
 
 def test_scan_reports_line_numbers_and_counts(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("hello\ncontact: bob@acme.io, amy@acme.io\nbye\n")
+    sample = "hello\ncontact: bob@acme.io, amy@acme.io\nbye\n"  # pii:ignore - test input
+    (tmp_path / "a.txt").write_text(sample)
     result = _scan(tmp_path)
     assert result["files_scanned"] == 1
     assert result["findings"] == [
@@ -51,12 +56,12 @@ def test_scan_reports_line_numbers_and_counts(tmp_path: Path) -> None:
 
 
 def test_scan_never_outputs_the_matched_value(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("bob@acme.io\n")
-    assert "bob@acme.io" not in json.dumps(_scan(tmp_path))
+    (tmp_path / "a.txt").write_text(f"{BOB}\n")
+    assert BOB not in json.dumps(_scan(tmp_path))
 
 
 def test_low_scores_are_dropped(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("bob@acme.io\n")
+    (tmp_path / "a.txt").write_text(f"{BOB}\n")
     assert _scan(tmp_path, recognizer=LowScoreRecognizer())["findings"] == []
 
 
@@ -75,13 +80,33 @@ class FakeCardRecognizer:
 def test_placeholder_email_domains_are_not_personal_data(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a@example.com b@Example.ORG c@host.test d@x.localhost\n")
     assert _scan(tmp_path)["findings"] == []
-    (tmp_path / "b.txt").write_text("real@acme.io\n")
+    (tmp_path / "b.txt").write_text(f"{REAL}\n")
     assert [f["file"] for f in _scan(tmp_path)["findings"]] == ["b.txt"]
 
 
-def test_only_numbers_shaped_like_real_cards_are_reported(tmp_path: Path) -> None:
+def test_addresses_inside_urls_are_not_emails(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text(
-        "ts 1761800000000\nvisa 4111111111111111\namex 378282246310005\n"
+        "ssh://git@github.com/a/b\n"
+        '"git+ssh://git@github.com/a/b.git"\n'
+        "https://user:pw@github.com/a/b\n"
+        f"mailto:{BOB}\n"
+        f"contact {BOB}\n"
+    )
+    lines = [f["line"] for f in _scan(tmp_path)["findings"]]
+    assert lines == [4, 5]  # a mailto: link and plain text are still reported
+
+
+def test_lines_marked_pii_ignore_are_not_reported(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text(
+        f'OWNER = "bob@acme.io"  # pii:ignore - the public maintainer address\nOTHER = "{AMY}"\n'
+    )
+    assert [f["line"] for f in _scan(tmp_path)["findings"]] == [2]
+
+
+def test_only_numbers_shaped_like_real_cards_are_reported(tmp_path: Path) -> None:
+    # Published test card numbers, not real cards.
+    (tmp_path / "a.txt").write_text(
+        "ts 1761800000000\nvisa 4111111111111111\namex 378282246310005\n"  # pii:ignore
     )
     findings = _scan(tmp_path, recognizer=FakeCardRecognizer())["findings"]
     assert [f["line"] for f in findings] == [2, 3]  # the millisecond timestamp is not a card
@@ -89,7 +114,7 @@ def test_only_numbers_shaped_like_real_cards_are_reported(tmp_path: Path) -> Non
 
 def test_generated_files_are_not_scanned_for_personal_data(tmp_path: Path) -> None:
     for name in ("diagram.excalidraw", "logo.svg", "app.js.map", "package-lock.json", "x.min.js"):
-        (tmp_path / name).write_text("bob@acme.io\n")
+        (tmp_path / name).write_text(f"{BOB}\n")
     result = _scan(tmp_path)
     assert result["files_scanned"] == 0 and result["findings"] == []
 
@@ -97,9 +122,9 @@ def test_generated_files_are_not_scanned_for_personal_data(tmp_path: Path) -> No
 def test_ignored_dirs_git_binary_and_large_files_are_skipped(tmp_path: Path) -> None:
     for folder in ("node_modules", ".git", "src"):
         (tmp_path / folder).mkdir()
-        (tmp_path / folder / "x.txt").write_text("bob@acme.io\n")
-    (tmp_path / "bin.dat").write_bytes(b"bob@acme.io\0\n")
-    (tmp_path / "big.txt").write_text("bob@acme.io\n" + "x" * pii_runner.MAX_FILE_BYTES)
+        (tmp_path / folder / "x.txt").write_text(f"{BOB}\n")
+    (tmp_path / "bin.dat").write_bytes(BOB.encode() + b"\0\n")
+    (tmp_path / "big.txt").write_text(f"{BOB}\n" + "x" * pii_runner.MAX_FILE_BYTES)
     result = _scan(tmp_path, ignore=["**/node_modules/**"])
     assert [f["file"] for f in result["findings"]] == ["src/x.txt"]
 
@@ -107,7 +132,7 @@ def test_ignored_dirs_git_binary_and_large_files_are_skipped(tmp_path: Path) -> 
 def test_symlinks_are_not_followed(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    (tmp_path / "outside.txt").write_text("bob@acme.io\n")
+    (tmp_path / "outside.txt").write_text(f"{BOB}\n")
     try:
         (root / "link.txt").symlink_to(tmp_path / "outside.txt")
     except OSError:
@@ -116,7 +141,7 @@ def test_symlinks_are_not_followed(tmp_path: Path) -> None:
 
 
 def test_main_writes_the_result_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "a.txt").write_text("bob@acme.io\n")
+    (tmp_path / "a.txt").write_text(f"{BOB}\n")
     config = tmp_path / "config.json"
     out = tmp_path / "out.json"
     config.write_text(

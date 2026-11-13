@@ -1,21 +1,17 @@
 import logging
 import time
 
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
+
+from scanner.api.asgi import HttpMiddleware
 
 logger = logging.getLogger("scanner.access")
 
 
-class AccessLogMiddleware:
+class AccessLogMiddleware(HttpMiddleware):
     """One line per request; the query string and headers (which can hold keys) are left out."""
 
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
         started = time.perf_counter()
         status = 500
 
